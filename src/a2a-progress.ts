@@ -6,7 +6,7 @@ import {
 export const DEFAULT_A2A_PROGRESS_INTERVAL_SECONDS = 180;
 
 const TERMINAL_CLAIM_RE =
-  /\b(?:done|complete|completed|finished|failed|failure|blocked|final\s+(?:answer|result)|cannot\s+(?:complete|continue)|need(?:ed|s)?\s+(?:your\s+)?input|waiting\s+(?:for\s+)?(?:your\s+)?input|waiting\s+for\s+you)\b/i;
+  /\b(?:done|complete|completed|finished|failed|failure|blocked|final\s+(?:answer|result)|cannot\s+(?:complete|continue)|could(?:\s+not|n't)\s+produce\s+or\s+deliver\s+a\s+reply|need(?:ed|s)?\s+(?:your\s+)?input|waiting\s+(?:for\s+)?(?:your\s+)?input|waiting\s+for\s+you)\b/i;
 
 export function resolveA2AProgressIntervalSeconds(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0

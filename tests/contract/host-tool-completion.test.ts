@@ -17,7 +17,9 @@ const hostVersion = JSON.parse(readFileSync(join(hostDist, "..", "package.json")
 const baselineWithoutFinalizer = hostVersion === "2026.5.27";
 
 async function hostFunction(bundle: string, name: string): Promise<any> {
-  const files = readdirSync(hostDist).filter((file) => file.startsWith(`${bundle}-`) && file.endsWith(".js") && readFileSync(join(hostDist, file), "utf8").includes(`function ${name}(`));
+  const files = readdirSync(hostDist).filter((file) => file.startsWith(`${bundle}-`) &&
+    (file.endsWith(".js") || file.endsWith(".mjs")) &&
+    readFileSync(join(hostDist, file), "utf8").includes(`function ${name}(`));
   expect(files, `Expected one host ${bundle} bundle`).toHaveLength(1);
   const exports = await import(pathToFileURL(join(hostDist, files[0])).href);
   const fn = Object.values(exports).find((value) => typeof value === "function" && value.name === name);
@@ -186,9 +188,9 @@ describe.skipIf(baselineWithoutFinalizer)("actual host explicit tool-batch compl
       progressState: { accumulatedBlockTtsText: "", blockCount: 0, channelTransformSuppressed: false },
       replyOperationRunState: {}, bindingState: {}, routeState: {},
       dispatcher: { getQueuedCounts: () => ({ final: 0, block: 0, tool: 0 }) },
-      turnLedger: { hasVisibleDelivery: () => false, settleQueued: async () => "settled" },
+      turnLedger: { canAttemptFallback: () => true, settleQueued: async () => "settled" },
       flushPendingCommentaryProgress: async () => {}, waitForPendingDirectBlockReplyDelivery: async () => {},
-      getDispatchAbortSignal: () => undefined, getObservedReplyDelivery: () => false,
+      getDispatchAbortSignal: () => undefined, getObservedReplyDelivery: () => false, getAgentRunId: () => undefined,
       throwIfDispatchOperationAborted: () => {}, routeReplyToOriginating: route,
       isRoutedReplyDelivered: (value: any) => value.ok, getAgentRunTerminalOutcome: () => undefined,
       commitInboundDedupeIfClaimed: () => {}, recordAgentDispatchCompleted: () => {}, recordProcessed: () => {}, markIdle: () => {},

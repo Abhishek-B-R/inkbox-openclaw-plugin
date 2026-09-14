@@ -12,7 +12,9 @@ const hostVersion = JSON.parse(readFileSync(join(hostDist, "..", "package.json")
 
 async function storageValidator(): Promise<(key: string, agentId?: string) => void> {
   const files = readdirSync(hostDist).filter((file) =>
-    file.startsWith("session-accessor.sqlite-transcript-state-") && file.endsWith(".js"),
+    file.startsWith("session-accessor.sqlite-") &&
+    (file.endsWith(".js") || file.endsWith(".mjs")) &&
+    readFileSync(join(hostDist, file), "utf8").includes("function assertCanonicalSessionKeyWrite("),
   );
   expect(files, "The latest host must expose its canonical storage-key validator").toHaveLength(1);
   const exports = await import(pathToFileURL(join(hostDist, files[0])).href);

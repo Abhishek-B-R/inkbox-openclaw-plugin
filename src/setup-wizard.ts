@@ -940,7 +940,7 @@ async function configureVoiceAi(params: {
     typeof (params.identity as any).getIncomingCallAction !== "function" ||
     typeof (params.identity as any).setIncomingCallAction !== "function"
   ) {
-    console.log("  Inkbox Voice AI setup requires @inkbox/sdk 0.5.9.");
+    console.log("  Inkbox Voice AI setup requires @inkbox/sdk 0.6.10.");
     return undefined;
   }
   let previous: any;
