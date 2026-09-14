@@ -249,13 +249,7 @@ openclaw config set tools.allow '[
   "inkbox_update_note",
   "inkbox_delete_note",
   "inkbox_list_mail_contact_rules",
-  "inkbox_create_mail_contact_rule",
-  "inkbox_update_mail_contact_rule",
-  "inkbox_delete_mail_contact_rule",
   "inkbox_list_phone_contact_rules",
-  "inkbox_create_phone_contact_rule",
-  "inkbox_update_phone_contact_rule",
-  "inkbox_delete_phone_contact_rule",
   "inkbox_list_note_access",
   "inkbox_grant_note_access",
   "inkbox_revoke_note_access",
@@ -436,7 +430,7 @@ Optional:
 - Lifecycle: `inkbox_mark_emails_read`, `inkbox_list_texts`, `inkbox_get_text`, `inkbox_mark_text_read`, `inkbox_mark_text_conversation_read`, `inkbox_mark_imessage_conversation_read`
 - iMessage: `inkbox_imessage_triage_number`, `inkbox_list_imessage_assignments`, `inkbox_send_imessage_reaction`
 - Notes: `inkbox_update_note`, `inkbox_delete_note`
-- Contact rules: `inkbox_list_mail_contact_rules`, `inkbox_create_mail_contact_rule`, `inkbox_update_mail_contact_rule`, `inkbox_delete_mail_contact_rule`, `inkbox_list_phone_contact_rules`, `inkbox_create_phone_contact_rule`, `inkbox_update_phone_contact_rule`, `inkbox_delete_phone_contact_rule`
+- Contact rules: `inkbox_list_mail_contact_rules`, `inkbox_list_phone_contact_rules`; manage changes in the Inkbox Console
 - Note access: `inkbox_list_note_access`, `inkbox_grant_note_access`, `inkbox_revoke_note_access`
 - Vault: `inkbox_credentials_list`, `inkbox_credentials_get_login`, `inkbox_credentials_get_api_key`, `inkbox_credentials_get_ssh_key`, `inkbox_totp_code`
 - Diagnostic: `inkbox_whoami`
