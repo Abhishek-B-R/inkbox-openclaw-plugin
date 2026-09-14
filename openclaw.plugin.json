@@ -137,6 +137,11 @@
             "minimum": 1,
             "description": "Maximum time to let the hidden voice agent warmup run before aborting. Defaults to 70000."
           },
+          "a2aProgressIntervalSeconds": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Seconds between short progress updates while serving an A2A task. Set to 0 to disable periodic updates. Defaults to 180."
+          },
           "allowedRecipients": {
             "type": "array",
             "items": { "type": "string" }
@@ -194,6 +199,10 @@
               "keyEnvVar": { "type": "string" }
             }
           },
+          "skipWebhookReconcile": {
+            "type": "boolean",
+            "description": "Leave webhook subscriptions untouched at startup. They must already point at this gateway's webhook URL."
+          },
           "accounts": {
             "type": "object",
             "additionalProperties": {
@@ -226,6 +235,7 @@
                 "voiceAgentPrewarm": { "type": "boolean" },
                 "voiceAgentPrewarmTtlMs": { "type": "integer", "minimum": 0 },
                 "voiceAgentPrewarmTimeoutMs": { "type": "integer", "minimum": 1 },
+                "a2aProgressIntervalSeconds": { "type": "integer", "minimum": 0 },
                 "allowedRecipients": {
                   "type": "array",
                   "items": { "type": "string" }
@@ -282,6 +292,10 @@
                   "properties": {
                     "keyEnvVar": { "type": "string" }
                   }
+                },
+                "skipWebhookReconcile": {
+                  "type": "boolean",
+                  "description": "Leave webhook subscriptions untouched at startup. They must already point at this gateway's webhook URL."
                 }
               }
             }
@@ -397,6 +411,11 @@
         "minimum": 1,
         "description": "Maximum time to let the hidden voice agent warmup run before aborting. Defaults to 70000."
       },
+      "a2aProgressIntervalSeconds": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Seconds between short progress updates while serving an A2A task. Set to 0 to disable periodic updates. Defaults to 180."
+      },
       "vault": {
         "type": "object",
         "additionalProperties": false,
@@ -407,6 +426,10 @@
             "description": "Env var the vault unlock key is read from. Defaults to INKBOX_VAULT_KEY."
           }
         }
+      },
+      "skipWebhookReconcile": {
+        "type": "boolean",
+        "description": "Leave webhook subscriptions untouched at startup. They must already point at this gateway's webhook URL."
       },
       "allowedRecipients": {
         "type": "array",

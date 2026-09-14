@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 from typing import Any
@@ -18,6 +19,28 @@ STOPPED_WIRE_STATES = {
     "TASK_STATE_INPUT_REQUIRED",
     "TASK_STATE_AUTH_REQUIRED",
 }
+PROGRESS_RECEIPT_SUFFIX = "Expect progress updates about every 1 minute."
+PROGRESS_UPDATE_RE = re.compile(r"^(.+) \((\d+)s elapsed\)$")
+GENERIC_PROGRESS_FALLBACK = "I'm continuing the requested work."
+A2A_FAILURE_SHAPE_RE = re.compile(
+    r"A2A failure shape: stage=(?:dispatch|admission|terminal) "
+    r"name=(?:Error|TypeError|RangeError|AbortError|other) "
+    r"frame=(?:[A-Za-z0-9_.-]+\.(?:ts|js|mjs):[0-9]+|unknown:0)(?=[\s\"\\]|$)"
+)
+
+
+def _a2a_failure_shapes(log: str) -> list[str]:
+    """Extract only bounded diagnostics, never adjacent error prose or paths."""
+    return [match.group(0) for match in A2A_FAILURE_SHAPE_RE.finditer(log)][-20:]
+
+
+TERMINAL_PROGRESS_RE = re.compile(
+    r"\b(?:done|complete|completed|finished|failed|failure|blocked|"
+    r"final\s+(?:answer|result)|cannot\s+(?:complete|continue)|"
+    r"need(?:ed|s)?\s+(?:your\s+)?input|"
+    r"waiting\s+(?:for\s+)?(?:your\s+)?input|waiting\s+for\s+you)\b",
+    re.IGNORECASE,
+)
 
 
 def _required_env(name: str) -> str:
@@ -39,6 +62,38 @@ def _identity(client: Inkbox):
     return client.get_identity(handle), handle
 
 
+def _enable_and_verify_card(
+    identity: Any,
+    a2a: Any,
+    card_url: str,
+    expected_handle: str,
+    *,
+    attempts: int = 6,
+    delay: float = 2.0,
+) -> Any:
+    """Enable one test receiver, then verify its exact card through the protocol."""
+    settings = identity.a2a_enable()
+    if not bool(getattr(settings, "enabled", False)):
+        raise AssertionError("A2A receiver enablement did not persist")
+
+    for attempt in range(1, attempts + 1):
+        try:
+            target = a2a.fetch_card(card_url)
+        except Exception:
+            if attempt == attempts:
+                raise AssertionError(
+                    "A2A card endpoint did not become available after enablement"
+                ) from None
+            time.sleep(delay)
+            continue
+        if target.card.name != f"@{expected_handle}":
+            raise AssertionError(
+                "A2A card identity did not match the configured test identity"
+            )
+        return target
+    raise AssertionError("A2A card preflight exhausted its bounded attempts")
+
+
 def _parts_text(parts: list[dict[str, Any]]) -> str:
     return "\n".join(
         str(part["text"])
@@ -55,6 +110,47 @@ def _wire_history_text(task: Any) -> str:
     )
 
 
+def _wire_history_messages(task: Any) -> list[str]:
+    return [
+        _parts_text(message.get("parts", []))
+        for message in task.raw.get("history", [])
+        if isinstance(message, dict)
+    ]
+
+
+def _wire_worker_messages(task: Any) -> list[str]:
+    return [
+        _parts_text(message.get("parts", []))
+        for message in task.raw.get("history", [])
+        if (
+            isinstance(message, dict)
+            and str(message.get("role", "")).lower() in {"agent", "role_agent"}
+        )
+    ]
+
+
+def _wait_for_history_message(
+    a2a: Any,
+    target: Any,
+    task_id: str,
+    predicate: Any,
+    timeout: float,
+) -> tuple[Any, str]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        task = a2a.get_task(target, task_id, history_length=50)
+        for text in _wire_history_messages(task):
+            if predicate(text):
+                return task, text
+        state = _enum_value(task.state)
+        if state in STOPPED_WIRE_STATES:
+            raise AssertionError(
+                f"A2A task stopped before the expected history message: {state}"
+            )
+        time.sleep(1)
+    raise TimeoutError("Expected A2A history message did not arrive")
+
+
 def _rest_history_text(task: Any) -> str:
     return "\n".join(_parts_text(message.parts) for message in task.messages)
 
@@ -68,6 +164,8 @@ def _wait_protocol_task(
     timeout: float,
 ) -> Any:
     deadline = time.monotonic() + timeout
+    task = None
+    state = "not_observed"
     while time.monotonic() < deadline:
         task = a2a.get_task(target, task_id, history_length=50)
         state = _enum_value(task.state)
@@ -76,7 +174,16 @@ def _wait_protocol_task(
         if state in STOPPED_WIRE_STATES:
             raise AssertionError(f"A2A task stopped in unexpected state {state}")
         time.sleep(1)
-    raise TimeoutError(f"A2A task did not reach {sorted(expected)} before timeout")
+    # Report only protocol shape, never task/history content or identity data.
+    known_states = STOPPED_WIRE_STATES | {"TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"}
+    safe_state = state if state in known_states else "unknown"
+    history = task.raw.get("history", []) if task is not None else []
+    worker_messages = len(_wire_worker_messages(task)) if task is not None else 0
+    raise TimeoutError(
+        f"A2A task did not reach {sorted(expected)} before timeout; "
+        f"last_state={safe_state} history_messages={len(history)} "
+        f"worker_messages={worker_messages}"
+    )
 
 
 def _send_task(a2a: Any, target: Any, text: str) -> Any:
@@ -214,6 +321,79 @@ def _inbound_multi(a2a: Any, target: Any, timeout: float, run: str) -> None:
         _cancel_if_open(a2a, target, task.id)
 
 
+def _inbound_progress(a2a: Any, target: Any, timeout: float, run: str) -> None:
+    completion = f"a2a-ci-inbound-progress-{run}"
+    started = time.monotonic()
+    task = _send_task(
+        a2a,
+        target,
+        "Add 2 + 2. Wait for one minute. Then add 3 + 3. Wait for another "
+        "minute. Finally add the two results together and return the final "
+        f"total. Do not finish before both waits elapse. Include `{completion}` "
+        "and the exact expression `4 + 6 = 10` in the final answer.",
+    )
+    try:
+        _, receipt = _wait_for_history_message(
+            a2a,
+            target,
+            task.id,
+            lambda text: text.startswith(f"Task {task.id} received."),
+            timeout=min(timeout, 30),
+        )
+        if time.monotonic() - started > 30:
+            raise AssertionError("Initial A2A acknowledgement was not prompt")
+        if not receipt.endswith(PROGRESS_RECEIPT_SUFFIX):
+            raise AssertionError(
+                "Initial A2A acknowledgement omitted the progress frequency"
+            )
+
+        final = _wait_protocol_task(
+            a2a,
+            target,
+            task.id,
+            expected={"TASK_STATE_COMPLETED"},
+            timeout=timeout,
+        )
+        history = _wire_history_messages(final)
+        progress = []
+        summaries = []
+        for index, text in enumerate(history):
+            match = PROGRESS_UPDATE_RE.fullmatch(text)
+            if match is None:
+                continue
+            summary = match.group(1).strip()
+            if not summary:
+                raise AssertionError("A periodic progress update had an empty summary")
+            if TERMINAL_PROGRESS_RE.search(summary):
+                raise AssertionError("A periodic progress update claimed a terminal state")
+            summaries.append(summary)
+            progress.append((index, int(match.group(2))))
+        if len(progress) < 2:
+            raise AssertionError(
+                f"Expected at least two periodic progress updates, got {len(progress)}"
+            )
+        if all(summary == GENERIC_PROGRESS_FALLBACK for summary in summaries):
+            raise AssertionError("The auxiliary progress writer only used its generic fallback")
+        elapsed = [seconds for _, seconds in progress]
+        first_interval = elapsed[0]
+        second_interval = elapsed[1] - elapsed[0]
+        if not (50 <= first_interval <= 90 and 50 <= second_interval <= 90):
+            raise AssertionError(
+                f"Periodic progress cadence was outside tolerance: {elapsed[:2]}"
+            )
+        receipt_index = history.index(receipt)
+        if not receipt_index < progress[0][0] < progress[1][0]:
+            raise AssertionError("A2A acknowledgement and progress updates are out of order")
+        worker_messages = _wire_worker_messages(final)
+        if not worker_messages:
+            raise AssertionError("Long-running A2A task returned no worker message")
+        final_text = worker_messages[-1]
+        if completion not in final_text or "4 + 6 = 10" not in final_text:
+            raise AssertionError("Long-running A2A task returned the wrong result")
+    finally:
+        _cancel_if_open(a2a, target, task.id)
+
+
 def _outbound_single(
     a2a: Any,
     target: Any,
@@ -315,17 +495,30 @@ def main() -> None:
     base_url = os.environ.get("INKBOX_BASE_URL", "https://inkbox.ai").rstrip("/")
     aut = Inkbox(api_key=_required_env("AUT_INKBOX_API_KEY"), base_url=base_url)
     remote = Inkbox(api_key=_required_env("REMOTE_INKBOX_API_KEY"), base_url=base_url)
-    _, aut_handle = _identity(aut)
+    aut_identity, aut_handle = _identity(aut)
     remote_identity, remote_handle = _identity(remote)
     a2a = remote_identity.a2a_client()
-    target = a2a.fetch_card(f"{base_url}/a2a/{aut_handle}/card")
+    target = _enable_and_verify_card(
+        aut_identity,
+        a2a,
+        f"{base_url}/a2a/{aut_handle}/card",
+        aut_handle,
+    )
     remote_card_url = f"{base_url}/a2a/{remote_handle}/card"
+    _enable_and_verify_card(
+        remote_identity,
+        a2a,
+        remote_card_url,
+        remote_handle,
+    )
     run = uuid.uuid4().hex[:12]
     try:
         if scenario == "inbound-single":
             _inbound_single(a2a, target, timeout, run)
         elif scenario == "inbound-multi":
             _inbound_multi(a2a, target, timeout, run)
+        elif scenario == "inbound-progress":
+            _inbound_progress(a2a, target, timeout, run)
         elif scenario == "outbound-single":
             _outbound_single(
                 a2a, target, remote_identity, remote_card_url, timeout, run

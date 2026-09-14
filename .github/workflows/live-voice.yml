@@ -8,7 +8,7 @@ name: Live — voice calls (Inkbox TTS/STT + realtime + Voice AI)
 #                       a direct Inkbox contact read during the call.
 #   outbound_hosted   — driver requests a call; Inkbox Voice AI calls, records an
 #                       SMS commitment, and OpenClaw settles it after hangup.
-# Each leg verifies the stored call transcript shows the agent spoke to the caller.
+# Each leg verifies driver-local speech and a two-way AUT-owned transcript.
 # Real model + real calls, so this runs only on ready (non-draft) PRs + dispatch, and
 # shares the AUT tunnel lock with the other live suites.
 on:
@@ -50,7 +50,7 @@ concurrency:
 
 jobs:
   voice:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -68,7 +68,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: "24.16.0"
           cache: npm
 
       - uses: actions/setup-python@v6
@@ -79,36 +79,35 @@ jobs:
         # uvicorn[standard] (not bare uvicorn): the driver accepts a WebSocket
         # upgrade, which needs the websockets extra.
         run: |
-          pip install 'inkbox==0.5.9' pytest fastapi 'uvicorn[standard]'
+          pip install 'inkbox==0.6.10' pytest fastapi 'uvicorn[standard]'
 
       - name: Build the plugin
         run: |
-          npm ci
-          npm install --no-save --package-lock=false openclaw@2026.5.27
+          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" ci
+          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install --no-save --package-lock=false openclaw@2026.5.27
           npm run build
 
       - name: Install OpenClaw host
         run: |
-          npm install -g openclaw@latest
+          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install -g openclaw@latest
           openclaw --version
 
       - name: Onboard model provider (real OpenAI)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          # The agent's reasoning (deciding to place a call, composing replies)
-          # uses the chat model; send it straight to OpenAI as-is.
+          # Use native model metadata for reasoning and token budgets.
           # --skip-health: onboard otherwise waits for a running gateway, and
           # ours starts in a later step.
           openclaw onboard --non-interactive \
-            --auth-choice custom-api-key \
-            --custom-base-url "https://api.openai.com/v1" \
-            --custom-model-id "gpt-5.6-terra" \
-            --custom-api-key "$OPENAI_API_KEY" \
-            --custom-compatibility openai \
+            --auth-choice openai-api-key \
+            --openai-api-key "$OPENAI_API_KEY" \
             --secret-input-mode plaintext \
             --skip-health \
             --accept-risk
+          openclaw models set openai/gpt-5.6-sol
+          # Inkbox completion/progress hooks require the native OpenClaw runner.
+          openclaw config set 'agents.defaults.models["openai/gpt-5.6-sol"].agentRuntime.id' openclaw
 
       - name: Configure AUT identity + speech path (${{ matrix.scenario }})
         env:
@@ -123,10 +122,9 @@ jobs:
           print(c.mailboxes.list()[0].email_address.split("@", 1)[0])
           PYEOF
           )"
-          echo "AUT handle: $HANDLE"
           # Install the plugin BEFORE writing channels.inkbox.* — the channel id
           # only validates once the plugin is registered.
-          openclaw plugins install -l --dangerously-force-unsafe-install "$GITHUB_WORKSPACE"
+          openclaw plugins install -l --force --accept-capabilities "$GITHUB_WORKSPACE"
           openclaw plugins enable inkbox || true
           # Hosted completion settlement uses before_agent_run to bind the
           # exact generated run before accepting any SMS tool evidence.
@@ -168,7 +166,7 @@ jobs:
             fi
             sleep 5
           done
-          echo "::error::gateway did not become ready"; cat "$GATEWAY_LOG"; exit 1
+          echo "::error::gateway did not become ready"; exit 1
 
       - name: Start voice driver and wait for its tunnel
         env:
@@ -176,30 +174,28 @@ jobs:
         run: |
           if [ "${{ matrix.scenario }}" = "outbound_hosted" ]; then
             # This value crosses TTS -> PSTN -> STT before Voice AI records the
-            # follow-up. Encode the run as five distinct everyday words;
+            # follow-up. Hash the full run identity as three distinct everyday words;
             # conventional phonetic-alphabet terms were normalized into
             # alternate words or familiar phrases.
-            DIGITS="${GITHUB_RUN_ID: -4}${GITHUB_RUN_ATTEMPT: -1}"
-            HOSTED_MARKER="$(python3 "$GITHUB_WORKSPACE/tests/live/voice_marker.py" "$DIGITS")"
+            RUN_TOKEN="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            HOSTED_MARKER="$(python3 "$GITHUB_WORKSPACE/tests/live/voice_marker.py" "$RUN_TOKEN")"
             echo "HOSTED_POST_CALL_MARKER=$HOSTED_MARKER" >> "$GITHUB_ENV"
-            # Put the exact marker in both action fields so the hosted agent
-            # cannot preserve the SMS intent while dropping the marker from
-            # the post-call action or sending the SMS during the call.
-            export VOICE_DRIVER_LINE="After we hang up, send me one SMS containing these exact five words: $HOSTED_MARKER. Create one post-call action now. Set both the action title and the action details to this exact seven-word phrase: Send SMS $HOSTED_MARKER. Wait for the action tool to succeed, then read the exact five-word SMS body back to me. Do not paraphrase, omit a word, or send the SMS during the call."
+            export VOICE_DRIVER_LINE="After we hang up, send me one SMS containing exactly these three words: $HOSTED_MARKER. Create one post-call action now. Set both the action title and the action details to this exact five-word phrase: Send SMS $HOSTED_MARKER. Wait for the action tool to succeed, then read the exact three-word SMS body back to me. Do not paraphrase, omit a word, or send the SMS during the call."
             # The pytest gate, not the driver timer, owns the intentional hangup.
             export VOICE_DRIVER_LISTEN=180
           elif [ "${{ matrix.scenario }}" = "outbound_realtime_contact" ]; then
             export VOICE_DRIVER_LINE="Hi! What email address do you have on file for your contact Olivia Parker? Please read the email out loud, then say goodbye."
             export VOICE_DRIVER_LISTEN=40
+            export VOICE_DRIVER_ANSWER_SETTLE=4
           fi
           VOICE_DRIVER_STATE="$DRIVER_STATE" VOICE_DRIVER_PORT=8090 \
             python3 "$GITHUB_WORKSPACE/tests/live/voice_driver.py" > "$DRIVER_LOG" 2>&1 &
           echo $! > "$RUNNER_TEMP/driver.pid"
           for i in $(seq 1 30); do      # up to ~90s
-            if [ -s "$DRIVER_STATE" ]; then echo "driver ready:"; cat "$DRIVER_STATE"; exit 0; fi
+            if [ -s "$DRIVER_STATE" ]; then echo "driver ready"; exit 0; fi
             sleep 3
           done
-          echo "::error::driver did not become ready"; cat "$DRIVER_LOG"; exit 1
+          echo "::error::driver did not become ready"; exit 1
 
       - name: Run voice test (${{ matrix.scenario }})
         env:
@@ -210,15 +206,44 @@ jobs:
         run: |
           LIVE_REAL_MODEL=1 VOICE_DRIVER_STATE="$DRIVER_STATE" \
             python3 -m pytest \
-              tests/live/test_voice_helpers.py tests/live/test_voice.py -v
+              tests/live/test_voice_helpers.py tests/live/test_voice.py -v --tb=short
 
-      # Failure-only: these logs carry live call content and this repo is public.
-      - name: Dump logs (on failure only)
+      - name: Report content-free failure state
         if: failure() || cancelled()
         run: |
-          echo "=== gateway.log ==="; cat "$GATEWAY_LOG" || true
-          echo "=== driver.log ==="; cat "$DRIVER_LOG" || true
-          echo "=== openclaw logs ==="; tail -n 200 /tmp/openclaw/openclaw-*.log 2>/dev/null || true
+          test -s "$GATEWAY_LOG" && echo "gateway_log=present" || echo "gateway_log=empty"
+          test -s "$DRIVER_LOG" && echo "driver_log=present" || echo "driver_log=empty"
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "tests/live")
+          from test_voice import _hosted_settlement_diagnostics
+          from test_cross_channel import _source_reply_shapes
+
+          path = Path(os.environ["GATEWAY_LOG"])
+          log = path.read_text(errors="replace") if path.exists() else ""
+          for name, marker in {
+              "hosted_collection_failure": "Voice AI post-call reply collection failed",
+              "hosted_settlement_stopped": "Voice AI post-call SMS settlement stopped",
+              "hosted_settlement_retry": "Voice AI post-call SMS settlement will retry",
+              "hosted_completed": "Voice AI post-call reconciliation completed",
+              "hosted_dispatch_failure": "Voice AI post-call reconciliation failed",
+          }.items():
+              print(f"{name}={log.count(marker)}")
+          for shape in _source_reply_shapes(log)[-20:]:
+              print(shape)
+          path = Path.home() / ".openclaw/inkbox/hosted-call-completions.json"
+          try:
+              entries = json.loads(path.read_text())
+          except (OSError, ValueError):
+              entries = {}
+          if isinstance(entries, dict):
+              for entry in list(entries.values())[-5:]:
+                  print("hosted_registry_shape=" + repr(_hosted_settlement_diagnostics(entry)))
+          PY
 
       - name: Tear down (always)
         if: always()
