@@ -12,6 +12,7 @@ All notable changes to the Inkbox OpenClaw plugin are listed here. The format fo
 
 ### Changed
 
+- Updated compatible transitive HTTP and development dependencies to patched versions.
 - Outbound calls now use a configured voicemail-detection policy. Hosted calls send `mode=hosted_agent` with a task reason, omit media WebSocket context, and inherit the saved authority default.
 - Inbound call routing and lifecycle subscriptions now follow the selected stack. The plugin and CI pin Inkbox SDK 0.6.10.
 - CI runs on Blacksmith and uses Node.js 24 for compatibility checks against the latest OpenClaw release.
