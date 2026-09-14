@@ -35,6 +35,7 @@ describe("A2A worker progress", () => {
       "The final result is ready.",
       "I cannot continue the request.",
       "I'm waiting for input.",
+      "OpenClaw couldn't produce or deliver a reply.",
     ]) {
       expect(sanitizeA2AProgressText(terminal, ["run_tests"], 60)).toBe(fallback);
     }

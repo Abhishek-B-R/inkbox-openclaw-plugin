@@ -50,7 +50,7 @@ concurrency:
 
 jobs:
   voice:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -68,7 +68,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - uses: actions/setup-python@v6
@@ -79,7 +79,7 @@ jobs:
         # uvicorn[standard] (not bare uvicorn): the driver accepts a WebSocket
         # upgrade, which needs the websockets extra.
         run: |
-          pip install 'inkbox==0.5.9' pytest fastapi 'uvicorn[standard]'
+          pip install 'inkbox==0.6.10' pytest fastapi 'uvicorn[standard]'
 
       - name: Build the plugin
         run: |

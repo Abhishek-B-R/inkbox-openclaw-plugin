@@ -20,7 +20,7 @@ it("explicitly selects the native runner in every real live fixture", () => {
 // A missing policy on a newer host is a compatibility failure, not a skip.
 describe.skipIf(hostVersion === "2026.5.27")("actual host runner selection", () => {
   it("retains native provider metadata while explicitly selecting lifecycle-capable execution", async () => {
-    const files = readdirSync(hostDist).filter((file) => file.startsWith("policy-") && file.endsWith(".js") &&
+    const files = readdirSync(hostDist).filter((file) => file.startsWith("policy-") && (file.endsWith(".js") || file.endsWith(".mjs")) &&
       readFileSync(join(hostDist, file), "utf8").includes("function resolveAgentHarnessPolicy("));
     expect(files).toHaveLength(1);
     const exports = await import(pathToFileURL(join(hostDist, files[0])).href);

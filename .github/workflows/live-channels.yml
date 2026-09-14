@@ -41,7 +41,7 @@ concurrency:
 
 jobs:
   live:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -56,7 +56,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - uses: actions/setup-python@v6
@@ -65,7 +65,7 @@ jobs:
 
       - name: Install live-test deps (Inkbox SDK + pytest)
         run: |
-          pip install 'inkbox==0.5.9' pytest
+          pip install 'inkbox==0.6.10' pytest
 
       - name: Build the plugin
         run: |
