@@ -1,3 +1,4 @@
+import { IDENTITY_EVENT_TYPES } from "../../src/inbound/subscriptions.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const realtimeMock = vi.hoisted(() => ({
@@ -6993,7 +6994,7 @@ describe("configureInkboxIdentityDelivery", () => {
     expect(setIncomingCallAction).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the canonical URL for A2A and iMessage subscriptions", async () => {
+  it("uses one canonical URL for all events without provisioned resources", async () => {
     const identity = {
       id: "identity-1",
       mailbox: null,
@@ -7009,26 +7010,10 @@ describe("configureInkboxIdentityDelivery", () => {
     });
 
     const inkbox = await runtime.getClient();
+    expect(inkbox.webhooks.subscriptions.create).toHaveBeenCalledTimes(1);
     expect(inkbox.webhooks.subscriptions.create).toHaveBeenCalledWith({
-      agentIdentityId: "identity-1",
-      url: "https://example.com/inkbox/webhook",
-      eventTypes: [
-        "a2a.task.created",
-        "a2a.task.message",
-        "a2a.task.canceled",
-        "a2a.sent_task.updated",
-      ],
-    });
-    expect(inkbox.webhooks.subscriptions.create).toHaveBeenCalledWith({
-      agentIdentityId: "identity-1",
-      url: "https://example.com/inkbox/webhook",
-      eventTypes: [
-        "imessage.received",
-        "imessage.sent",
-        "imessage.delivered",
-        "imessage.delivery_failed",
-        "imessage.reaction_received",
-      ],
+      agentIdentityId: "identity-1", url: "https://example.com/inkbox/webhook",
+      eventTypes: [...IDENTITY_EVENT_TYPES].sort(),
     });
   });
 

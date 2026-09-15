@@ -1,3 +1,4 @@
+import { IDENTITY_EVENT_TYPES } from "../src/inbound/subscriptions.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1426,28 +1427,11 @@ describe("runSetupWizard", () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(sdk.subscriptionsCreate).toHaveBeenCalledTimes(1);
     expect(sdk.subscriptionsCreate).toHaveBeenCalledWith({
-      mailboxId: "mailbox-1",
+      agentIdentityId: "identity-1",
       url: "https://smoke-agent.inkboxwire.com/inkbox/webhook",
-      eventTypes: [
-        "message.received",
-        "message.sent",
-        "message.forwarded",
-        "message.delivered",
-        "message.bounced",
-        "message.failed",
-      ],
-    });
-    expect(sdk.subscriptionsCreate).toHaveBeenCalledWith({
-      phoneNumberId: "phone-1",
-      url: "https://smoke-agent.inkboxwire.com/inkbox/webhook",
-      eventTypes: [
-        "text.received",
-        "text.sent",
-        "text.delivered",
-        "text.delivery_failed",
-        "text.delivery_unconfirmed",
-      ],
+      eventTypes: [...IDENTITY_EVENT_TYPES].sort(),
     });
     expect(sdk.phoneNumbersUpdate).toHaveBeenCalledWith("phone-1", {
       incomingCallAction: "auto_accept",
@@ -1467,37 +1451,11 @@ describe("runSetupWizard", () => {
     sdk.listIdentities.mockResolvedValue([{ agentHandle: "smoke-agent" }]);
     sdk.getIdentity.mockResolvedValue(identity);
     const url = "https://smoke-agent.inkboxwire.com/inkbox/webhook";
-    sdk.subscriptionsList.mockImplementation(async (filter: any) => [
-      {
-        id: filter.mailboxId ? "sub-mail" : filter.phoneNumberId ? "sub-text" : "sub-call",
-        organizationId: "org-1",
-        mailboxId: filter.mailboxId ?? null,
-        phoneNumberId: filter.phoneNumberId ?? null,
-        agentIdentityId: filter.agentIdentityId ?? null,
-        url,
-        eventTypes: filter.agentIdentityId
-          ? ["call.ended"]
-          : filter.mailboxId
-          ? [
-              "message.received",
-              "message.sent",
-              "message.forwarded",
-              "message.delivered",
-              "message.bounced",
-              "message.failed",
-            ]
-          : [
-              "text.received",
-              "text.sent",
-              "text.delivered",
-              "text.delivery_failed",
-              "text.delivery_unconfirmed",
-            ],
-        status: "active",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    ]);
+    sdk.subscriptionsList.mockResolvedValue([{
+      id: "sub-identity", organizationId: "org-1", agentIdentityId: "identity-1",
+      url, eventTypes: [...IDENTITY_EVENT_TYPES, "future.event"], status: "active", revision: 7,
+      createdAt: new Date(), updatedAt: new Date(),
+    }]);
     const prompter = createPrompter({ confirms: [false, true] });
 
     const result = await runSetupWizard({
@@ -1553,13 +1511,7 @@ describe("runSetupWizard", () => {
     expect(sdk.subscriptionsCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         agentIdentityId: "identity-1",
-        eventTypes: [
-          "imessage.received",
-          "imessage.sent",
-          "imessage.delivered",
-          "imessage.delivery_failed",
-          "imessage.reaction_received",
-        ],
+        eventTypes: [...IDENTITY_EVENT_TYPES].sort(),
       }),
     );
   });
@@ -1627,7 +1579,7 @@ describe("runSetupWizard", () => {
 
     expect(result.ok).toBe(true);
     expect(identity.update).not.toHaveBeenCalled();
-    expect(sdk.subscriptionsCreate).not.toHaveBeenCalledWith(
+    expect(sdk.subscriptionsCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         agentIdentityId: "identity-1",
         eventTypes: expect.arrayContaining(["imessage.received"]),

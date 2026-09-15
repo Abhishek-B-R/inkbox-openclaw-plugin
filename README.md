@@ -151,7 +151,7 @@ Start the gateway:
 openclaw gateway run
 ```
 
-Keep that process running. On startup the plugin opens an Inkbox tunnel, configures mail/text/iMessage webhook subscriptions and the incoming-call URL, and routes inbound email, SMS, iMessage, and calls into OpenClaw sessions.
+Keep that process running. On startup the plugin opens an Inkbox tunnel, reconciles an identity-owned notification subscription and configures the incoming-call URL, and routes inbound email, SMS, iMessage, and calls into OpenClaw sessions.
 
 Restart the gateway after changing Inkbox config, updating the plugin, or re-running setup:
 
@@ -175,7 +175,7 @@ openclaw gateway run
 4. Offers to enable iMessage for the agent, then optionally provisions a local SMS + voice phone number.
 5. Shows a native **Phone call voice stack** selector with Inkbox Voice AI, OpenAI Realtime API, and Inkbox TTS/STT.
 6. For Voice AI, configures contact-scoped or YOLO authority using an admin-scoped key only when authority must change; the admin credential is never persisted. For Realtime, validates the OpenAI API key and returns to the three choices if validation fails.
-7. Points mailbox, text, iMessage, and `call.ended` events at separate canonical subscriptions. Local voice stacks use `auto_accept` with the gateway media WebSocket; Voice AI uses `hosted_agent`.
+7. Subscribes the identity receiver to all email, text, iMessage, call-completion, and A2A events, even before channels are enabled. Local voice stacks use `auto_accept` with the gateway media WebSocket; Voice AI uses `hosted_agent`.
 8. Prints the final mailbox/phone summary.
 
 If setup provisions a new local phone number, it waits for any inbound SMS `START` to that number before finishing. It also seeds `~/.openclaw/inkbox/identity-state.json` so `openclaw inkbox doctor` can show useful channel state.
@@ -380,7 +380,7 @@ openclaw models auth login --provider openai-codex --set-default
 
 ## Smoke Test
 
-After the gateway prints `[gateway] ready`, `[inkbox] tunnel open`, mail/text subscriptions configured, and the incoming-call URL wired:
+After the gateway prints `[gateway] ready`, `[inkbox] tunnel open`, the identity notification subscription configured, and the incoming-call URL wired:
 
 1. Run `openclaw inkbox doctor`.
 2. Text `START` to the agent's Inkbox phone number from every phone the agent should text.
@@ -433,7 +433,7 @@ Required by default:
 - Inbound A2A tasks are delivered into isolated context sessions. During those
   turns, `inkbox_a2a_complete`, `inkbox_a2a_ask_caller`, and
   `inkbox_a2a_fail` commit the task outcome explicitly.
-- The plugin pins `@inkbox/sdk` 0.6.10.
+- The plugin pins `@inkbox/sdk` 0.6.12.
 - Email reads: `inkbox_list_unread_emails`, `inkbox_list_emails`, `inkbox_get_email`, `inkbox_get_email_thread`
 - SMS reads: `inkbox_list_text_conversations`, `inkbox_get_text_conversation` (conversation-ID aware, groups included by default)
 - iMessage reads: `inkbox_list_imessage_conversations`, `inkbox_get_imessage_conversation`
@@ -486,7 +486,7 @@ npm_config_cache=/tmp/npm-cache npm pack --dry-run
 
 - Plugin, not fork: uses OpenClaw plugin SDK, channel gateway, tools, HTTP routes, CLI, and bundled skills.
 - Agent-scoped: runtime should use an Inkbox agent-scoped API key.
-- Tunnel-first inbound: with a signing key, gateway opens an Inkbox tunnel, creates mail/text webhook subscriptions (plus an identity-owned iMessage subscription when enabled), and wires the incoming-call URL.
+- Tunnel-first inbound: with a signing key, gateway opens an Inkbox tunnel, reconciles an identity-owned subscription for its supported notification events, and wires the incoming-call URL.
 - Voice: Inkbox STT/TTS fallback path and realtime raw-media path both route through the same call WebSocket.
 - Post-call actions: realtime calls can register, edit, delete, and dispatch work for the main OpenClaw agent after hangup.
 - Hangup: realtime calls expose a two-step hangup tool so the agent can say goodbye before dropping the phone leg.
@@ -497,3 +497,11 @@ See [PLAN.md](./PLAN.md) for the longer architecture history and roadmap.
 ## License
 
 MIT - see [LICENSE](./LICENSE).
+
+### Notification subscription upgrades
+
+New receivers use one identity-owned subscription for the notification events consumed by this gateway,
+including channels that are not enabled yet. Incoming-call control is configured separately.
+On upgrade, compatible existing subscriptions retain their IDs, event selections, and context;
+missing events are added with revision-checked updates. Other destination URLs are untouched.
+Conflicting delivery authentication or context settings require review instead of replacement.

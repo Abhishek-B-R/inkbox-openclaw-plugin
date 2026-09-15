@@ -31,10 +31,7 @@ import {
   websocketUrl,
 } from "./call-websocket.js";
 import {
-  CALL_EVENT_TYPES,
-  IMESSAGE_EVENT_TYPES,
-  MAIL_EVENT_TYPES,
-  TEXT_EVENT_TYPES,
+  IDENTITY_EVENT_TYPES,
   reconcileWebhookSubscription,
 } from "./inbound/subscriptions.js";
 import {
@@ -1194,38 +1191,12 @@ async function configureIdentityGatewayDelivery(params: {
     inkboxCallWebsocketPath(DEFAULT_ACCOUNT_ID),
   );
 
-  const mailboxId = params.identity.mailbox?.id;
-  if (mailboxId) {
-    const mailSub = await reconcileWebhookSubscription(params.client, {
-      mailboxId,
-      url: webhookUrl,
-      eventTypes: MAIL_EVENT_TYPES,
-    });
-    if (mailSub) {
-      console.log(`Mailbox events subscribed at ${webhookUrl}.`);
-    } else {
-      console.log(
-        `Mailbox subscription was not created — see the warning above. Inbound email will not arrive at ${webhookUrl} until that is resolved.`,
-      );
-    }
-  } else if (params.identity.mailbox?.emailAddress) {
-    console.log(
-      `Mailbox ${params.identity.mailbox.emailAddress} has no id yet; skipping mail subscription.`,
-    );
-  }
-
-  if (params.identity.phoneNumber?.id) {
-    const textSub = await reconcileWebhookSubscription(params.client, {
-      phoneNumberId: params.identity.phoneNumber.id,
-      url: webhookUrl,
-      eventTypes: TEXT_EVENT_TYPES,
-    });
-    if (textSub) {
-      console.log(`Phone text events subscribed at ${webhookUrl}.`);
-    } else {
-      console.log("Phone text subscription was not created — see the warning above.");
-    }
-  }
+  await reconcileWebhookSubscription(params.client, {
+    agentIdentityId: params.identity.id,
+    url: webhookUrl,
+    eventTypes: IDENTITY_EVENT_TYPES,
+  });
+  console.log("Identity notification subscriptions are ready.");
 
   // Inbound-call config is identity-scoped: one row covers the dedicated
   // number AND the shared iMessage line. Register whenever calls can arrive
@@ -1250,37 +1221,6 @@ async function configureIdentityGatewayDelivery(params: {
     console.log(`Incoming calls bridge to ${callWebsocketUrl}.`);
   } else if (canReceiveCalls) {
     console.log("Incoming calls use Inkbox Voice AI.");
-  }
-
-  if (params.identity.id && canReceiveCalls) {
-    const callSub = await reconcileWebhookSubscription(params.client, {
-      agentIdentityId: params.identity.id,
-      url: webhookUrl,
-      eventTypes: CALL_EVENT_TYPES,
-    });
-    if (callSub) {
-      console.log(`Call lifecycle events subscribed at ${webhookUrl}.`);
-    } else {
-      console.log("Call lifecycle subscription was not created — see the warning above.");
-    }
-  }
-
-  // iMessage events are owned by the agent identity, not a phone number —
-  // the channel rides shared Inkbox-managed lines. Only valid while the
-  // identity is iMessage-enabled.
-  if (imessageEnabled && params.identity.id) {
-    const imessageSub = await reconcileWebhookSubscription(params.client, {
-      agentIdentityId: params.identity.id,
-      url: webhookUrl,
-      eventTypes: IMESSAGE_EVENT_TYPES,
-    });
-    if (imessageSub) {
-      console.log(`iMessage events subscribed at ${webhookUrl}.`);
-    } else {
-      console.log(
-        `iMessage subscription was not created — see the warning above. Inbound iMessage will not arrive at ${webhookUrl} until that is resolved.`,
-      );
-    }
   }
 
   const tunnelName = deriveTunnelName(params.identity, params.identityHandle);

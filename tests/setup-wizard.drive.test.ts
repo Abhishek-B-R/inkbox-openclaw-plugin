@@ -168,7 +168,7 @@ function makeWorld(options: {
       subscriptions: {
         list: vi.fn(async () => []),
         create: vi.fn(async (opts: any) => {
-          events.push(`delivery:subscribe:${opts.eventTypes[0].split(".")[0]}`);
+          events.push("delivery:subscribe:identity");
           return {
             id: "sub-1",
             url: opts.url,
@@ -306,11 +306,11 @@ describe("setup wizard end-to-end drive", () => {
     expect(result.ok).toBe(true);
     expect(world.events).toContain("signing-key:create");
     // iMessage stayed enabled, so realtime is still offered and inbound
-    // delivery still registers the shared-line call bridge + imessage sub.
+    // delivery still registers the shared-line call bridge + identity subscription.
     expect(
       prompter.confirmsAsked.some((q) => q.includes("Use OpenAI Realtime API")),
     ).toBe(true);
-    expect(world.events).toContain("delivery:subscribe:imessage");
+    expect(world.events).toContain("delivery:subscribe:identity");
     expect(world.events).toContain("delivery:call-config");
   });
 

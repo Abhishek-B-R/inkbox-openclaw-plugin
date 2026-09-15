@@ -86,11 +86,7 @@ import {
 } from "../outbound-call-context.js";
 import type { InboundCallDecision, InboundHandlers } from "./dispatch.js";
 import {
-  IMESSAGE_EVENT_TYPES,
-  A2A_EVENT_TYPES,
-  CALL_EVENT_TYPES,
-  MAIL_EVENT_TYPES,
-  TEXT_EVENT_TYPES,
+  IDENTITY_EVENT_TYPES,
   reconcileWebhookSubscription,
 } from "./subscriptions.js";
 import { resolvePhoneVoiceStack, type PhoneVoiceStack } from "../voice-stack.js";
@@ -6296,59 +6292,11 @@ export async function configureInkboxIdentityDelivery(
     opts.runtime.getIdentity(),
     opts.runtime.getClient(),
   ]);
-  const mailboxId = identity.mailbox?.id;
-  if (mailboxId) {
-    try {
-      const mailSub = await reconcileWebhookSubscription(
-        inkbox,
-        {
-          mailboxId,
-          url: opts.webhookUrl,
-          eventTypes: MAIL_EVENT_TYPES,
-        },
-        opts.logger,
-      );
-      if (mailSub) {
-        opts.logger?.info?.(`Inkbox mailbox events subscribed at ${opts.webhookUrl}`);
-      } else {
-        opts.logger?.warn?.(
-          `Inkbox mailbox subscription was not created at ${opts.webhookUrl}; inbound email will not be delivered until that is resolved.`,
-        );
-      }
-    } catch (error) {
-      opts.logger?.warn?.(
-        `Inkbox mailbox subscription reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  } else if (identity.mailbox?.emailAddress) {
-    opts.logger?.warn?.(
-      `Inkbox mailbox ${identity.mailbox.emailAddress} has no id; skipping mail subscription.`,
-    );
-  }
-  if (identity.phoneNumber?.id) {
-    try {
-      const textSub = await reconcileWebhookSubscription(
-        inkbox,
-        {
-          phoneNumberId: identity.phoneNumber.id,
-          url: opts.webhookUrl,
-          eventTypes: TEXT_EVENT_TYPES,
-        },
-        opts.logger,
-      );
-      if (textSub) {
-        opts.logger?.info?.(`Inkbox phone text events subscribed at ${opts.webhookUrl}`);
-      } else {
-        opts.logger?.warn?.(
-          `Inkbox phone text subscription was not created at ${opts.webhookUrl}; inbound SMS will not be delivered until that is resolved.`,
-        );
-      }
-    } catch (error) {
-      opts.logger?.warn?.(
-        `Inkbox phone text subscription reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
+  await reconcileWebhookSubscription(inkbox, {
+    agentIdentityId: identity.id,
+    url: opts.webhookUrl,
+    eventTypes: IDENTITY_EVENT_TYPES,
+  }, opts.logger);
   // Inbound-call config is identity-scoped: one row covers the dedicated
   // number AND any shared iMessage line. Register whenever calls can arrive
   // (a dedicated number, or iMessage enabled for shared-line calls).
@@ -6386,80 +6334,6 @@ export async function configureInkboxIdentityDelivery(
       opts.logger?.warn?.(
         `Inkbox incoming-call config update failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-    }
-  }
-  // Identity-owned channels use independent subscription rows at the same
-  // canonical receiver URL.
-  if (identity.id && canReceiveCalls) {
-    try {
-      const callSub = await reconcileWebhookSubscription(
-        inkbox,
-        {
-          agentIdentityId: identity.id,
-          url: opts.webhookUrl,
-          eventTypes: CALL_EVENT_TYPES,
-        },
-        opts.logger,
-      );
-      if (callSub) {
-        opts.logger?.info?.(`Inkbox call lifecycle events subscribed at ${opts.webhookUrl}`);
-      } else {
-        opts.logger?.warn?.(
-          `Inkbox call lifecycle subscription was not created at ${opts.webhookUrl}; Voice AI completion work will not be delivered until that is resolved.`,
-        );
-      }
-    } catch (error) {
-      opts.logger?.warn?.(
-        `Inkbox call lifecycle subscription reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-  if (identity.id) {
-    try {
-      const a2aSub = await reconcileWebhookSubscription(
-        inkbox,
-        {
-          agentIdentityId: identity.id,
-          url: opts.webhookUrl,
-          eventTypes: A2A_EVENT_TYPES,
-        },
-        opts.logger,
-      );
-      if (a2aSub) {
-        opts.logger?.info?.(`Inkbox A2A events subscribed at ${opts.webhookUrl}`);
-      } else {
-        opts.logger?.warn?.(
-          `Inkbox A2A subscription was not created at ${opts.webhookUrl}; inbound A2A tasks will not be delivered until that is resolved.`,
-        );
-      }
-    } catch (error) {
-      opts.logger?.warn?.(
-        `Inkbox A2A subscription reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    if (identity.imessageEnabled) {
-      try {
-        const imessageSub = await reconcileWebhookSubscription(
-          inkbox,
-          {
-            agentIdentityId: identity.id,
-            url: opts.webhookUrl,
-            eventTypes: IMESSAGE_EVENT_TYPES,
-          },
-          opts.logger,
-        );
-        if (imessageSub) {
-          opts.logger?.info?.(`Inkbox iMessage events subscribed at ${opts.webhookUrl}`);
-        } else {
-          opts.logger?.warn?.(
-            `Inkbox iMessage subscription was not created at ${opts.webhookUrl}; inbound iMessage will not be delivered until that is resolved.`,
-          );
-        }
-      } catch (error) {
-        opts.logger?.warn?.(
-          `Inkbox iMessage subscription reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
     }
   }
 }
