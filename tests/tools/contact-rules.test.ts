@@ -41,31 +41,16 @@ function createRuntime(params: {
 }
 
 describe("registerContactRuleTools", () => {
-  it("creates mailbox allow/block rules for the configured mailbox", async () => {
+  it("registers only read tools", () => {
     const { api, tools, options } = createApi();
-    const create = vi.fn().mockResolvedValue({ id: "rule-1" });
-    registerContactRuleTools(
-      api,
-      createRuntime({
-        identity: { mailbox: { emailAddress: "agent@inkboxmail.com" } },
-        mailContactRules: { create },
-      }),
-    );
+    registerContactRuleTools(api, createRuntime({}));
 
-    const out = await tools.get("inkbox_create_mail_contact_rule")!.execute("turn-1", {
-      action: "block",
-      matchType: "domain",
-      matchTarget: "spam.example",
-    });
-
-    expect(options.get("inkbox_create_mail_contact_rule")).toEqual({ optional: true });
-    expect(create).toHaveBeenCalledWith("agent@inkboxmail.com", {
-      action: "block",
-      matchType: "domain",
-      matchTarget: "spam.example",
-    });
-    expect(out.isError).toBeUndefined();
-    expect(out.content[0].text).toContain("Created mail contact rule id=rule-1");
+    expect([...tools.keys()]).toEqual([
+      "inkbox_list_mail_contact_rules",
+      "inkbox_list_phone_contact_rules",
+    ]);
+    expect(options.get("inkbox_list_mail_contact_rules")).toEqual({ optional: true });
+    expect(options.get("inkbox_list_phone_contact_rules")).toEqual({ optional: true });
   });
 
   it("lists phone rules for the configured phone number id", async () => {
@@ -93,34 +78,11 @@ describe("registerContactRuleTools", () => {
     expect(out.content[0].text).toContain("Returned 1 phone rule(s).");
   });
 
-  it("updates a mailbox rule with an action-only payload", async () => {
-    const { api, tools } = createApi();
-    const update = vi.fn().mockResolvedValue({ id: "rule-1", action: "allow" });
-    registerContactRuleTools(
-      api,
-      createRuntime({
-        identity: { mailbox: { emailAddress: "agent@inkboxmail.com" } },
-        mailContactRules: { update },
-      }),
-    );
-
-    await tools.get("inkbox_update_mail_contact_rule")!.execute("turn-1", {
-      ruleId: "rule-1",
-      action: "allow",
-    });
-
-    expect(update).toHaveBeenCalledWith("agent@inkboxmail.com", "rule-1", {
-      action: "allow",
-    });
-  });
-
   it("returns a tool error when phone rules are requested without a phone number", async () => {
     const { api, tools } = createApi();
     registerContactRuleTools(api, createRuntime({ identity: {} }));
 
-    const out = await tools.get("inkbox_delete_phone_contact_rule")!.execute("turn-1", {
-      ruleId: "rule-1",
-    });
+    const out = await tools.get("inkbox_list_phone_contact_rules")!.execute("turn-1", {});
 
     expect(out.isError).toBe(true);
     expect(out.content[0].text).toContain("has no phone number");

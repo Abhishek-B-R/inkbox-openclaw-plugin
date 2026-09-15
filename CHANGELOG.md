@@ -18,6 +18,7 @@ All notable changes to the Inkbox OpenClaw plugin are listed here. The format fo
 - CI runs on Blacksmith and uses Node.js 24 for compatibility checks against the latest OpenClaw release.
 - Delivery-failure recovery now requires one safe retry only for the first retryable failure. If that retry also fails, another safe retry is optional and `[SILENT]` is available; terminal failures stop immediately, while unknown failures require a safety review. The existing three-send hard cap is unchanged.
 - Hosted-call SMS follow-ups now use the call record's authoritative remote number, require tool-confirmed success, and allow one corrected retry after a recoverable content or policy rejection without falsely reporting terminal failures as complete.
+- Contact-rule tools are now read-only because agent-scoped identities cannot change mailbox or phone rules; make rule changes in the Inkbox Console.
 
 ## [0.2.7] - 2026-07-29
 
