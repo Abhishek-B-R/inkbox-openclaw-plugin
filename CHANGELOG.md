@@ -14,11 +14,31 @@ All notable changes to the Inkbox OpenClaw plugin are listed here. The format fo
 
 - Updated compatible transitive HTTP and development dependencies to patched versions.
 - Outbound calls now use a configured voicemail-detection policy. Hosted calls send `mode=hosted_agent` with a task reason, omit media WebSocket context, and inherit the saved authority default.
-- Inbound call routing and lifecycle subscriptions now follow the selected stack. The plugin and CI pin Inkbox SDK 0.6.10.
+- Inbound call routing and lifecycle subscriptions now follow the selected stack.
 - CI runs on Blacksmith and uses Node.js 24 for compatibility checks against the latest OpenClaw release.
 - Delivery-failure recovery now requires one safe retry only for the first retryable failure. If that retry also fails, another safe retry is optional and `[SILENT]` is available; terminal failures stop immediately, while unknown failures require a safety review. The existing three-send hard cap is unchanged.
 - Hosted-call SMS follow-ups now use the call record's authoritative remote number, require tool-confirmed success, and allow one corrected retry after a recoverable content or policy rejection without falsely reporting terminal failures as complete.
 - Contact-rule tools are now read-only because agent-scoped identities cannot change mailbox or phone rules; make rule changes in the Inkbox Console.
+
+## [0.2.15]
+
+### Added
+
+- Companion mode initialization with complete bounded history, durable inbound jobs, isolated conversation sessions, and canonical group replies.
+- Restart recovery that pauses uncertain host submissions instead of repeating them.
+
+### Changed
+
+- Pin published Inkbox SDK 0.7.6 for per-message admission metadata and reply-all.
+- Keep group SMS, iMessage, reactions, and recovery in the originating conversation, with raw local controls and sender-bound native approvals.
+- Add Auto/Mention group replies and Safe/Relaxed Companion responses to setup and account settings, including current email To addressing and durable background context.
+- Checkpoint completed replies before delivery, retry known pre-submission failures, and retain uncertain submissions or sends for inspection.
+- Use canonical reply-all for automatic email without rebuilding recipients.
+- Deliver native approval prompts immediately and accept the prompted group sender’s eligible reply while the original host turn is waiting; keep execution bound to its original run and conversation.
+- Hydrate incomplete Companion email bodies, retain compact quiet-group context with explicit retention notices, and keep local sponsor checks independent of live contact-service availability.
+- Preserve unseen ordinary group context across local diagnostics and rejected host dispatches; clear it only after actual model consumption or a confirmed native reset.
+- Make health registration idempotent across host plugin-discovery module reloads.
+- Preserve exact-run send completion, hosted SMS settlement, A2A task/progress evidence, and outbound call context across host module graphs.
 
 ## [0.2.7] - 2026-07-29
 

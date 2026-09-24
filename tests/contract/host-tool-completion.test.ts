@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { wrapToolWithBeforeToolCallHook } from "openclaw/plugin-sdk/agent-harness-runtime";
+import * as agentHarnessRuntime from "openclaw/plugin-sdk/agent-harness-runtime";
 import { dispatchInboundMessageWithDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,9 +16,10 @@ const require = createRequire(import.meta.url);
 const hostDist = dirname(dirname(require.resolve("openclaw/plugin-sdk/reply-runtime")));
 const hostVersion = JSON.parse(readFileSync(join(hostDist, "..", "package.json"), "utf8")).version;
 const baselineWithoutFinalizer = hostVersion === "2026.5.27";
+const requiredSourceFinalizer = hostVersion.localeCompare("2026.9.6", undefined, { numeric: true }) >= 0;
 
-async function hostFunction(bundle: string, name: string): Promise<any> {
-  const files = readdirSync(hostDist).filter((file) => file.startsWith(`${bundle}-`) &&
+async function hostFunction(bundle: string, name: string, aliases: string[] = []): Promise<any> {
+  const files = readdirSync(hostDist).filter((file) => [bundle, ...aliases].some((prefix) => file.startsWith(`${prefix}-`)) &&
     (file.endsWith(".js") || file.endsWith(".mjs")) &&
     readFileSync(join(hostDist, file), "utf8").includes(`function ${name}(`));
   expect(files, `Expected one host ${bundle} bundle`).toHaveLength(1);
@@ -110,6 +112,7 @@ describe.skipIf(baselineWithoutFinalizer)("actual host explicit tool-batch compl
   });
   it.each([
     { accepted: true, reply: undefined, deliveries: 0, name: "suppresses the outer fallback after an accepted explicit final send" },
+    { accepted: true, reply: "A redundant acknowledgement.", deliveries: 0, name: "does not invent source delivery after an accepted explicit final send" },
     { accepted: false, reply: undefined, deliveries: 1, name: "preserves the outer fallback when the requested send failed" },
     { accepted: false, reply: "Your report is ready.", deliveries: 1, name: "preserves a normal reply without a successful explicit final send" },
   ])("actual same-source dispatch $name", async ({ accepted, reply, deliveries }) => {
@@ -141,9 +144,49 @@ describe.skipIf(baselineWithoutFinalizer)("actual host explicit tool-batch compl
       expect(resolver).toHaveBeenCalledOnce();
       expect(transform).toHaveBeenCalled();
       expect(deliver).toHaveBeenCalledTimes(deliveries);
-      if (reply) expect(deliver.mock.calls[0][0]).toMatchObject({ text: reply });
-      if (accepted) expect(result.noVisibleReplyFallbackDelivered).not.toBe(true);
+      if (reply && !accepted) expect(deliver.mock.calls[0][0]).toMatchObject({ text: reply });
+      if (accepted) {
+        expect(result.noVisibleReplyFallbackDelivered).not.toBe(true);
+        expect(result.queuedFinal).toBe(false);
+        expect(result.counts.final).toBe(0);
+      }
       else if (!reply) expect(result.noVisibleReplyFallbackDelivered).toBe(true);
+    } finally {
+      capture.finish();
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it.skipIf(!requiredSourceFinalizer).each([true, false])("handles the actual inner native empty-reply error with accepted final send=%s", async (accepted) => {
+    const buildEmptyReply = await hostFunction("commentary-progress-owner", "buildEmptyInteractiveReplyPayload");
+    // Use the native constructor, not a copied fixture: wording/metadata drift
+    // must fail this compatibility check rather than silently hide a new error.
+    const nativeFailure = buildEmptyReply({ completion: { outcome: "missing" } });
+    expect(nativeFailure).toMatchObject({ isError: true });
+    const directory = await mkdtemp(join(tmpdir(), "inkbox-inner-completion-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", directory);
+    const sessionKey = `agent:main:inkbox:direct:${randomUUID()}`;
+    const context = { sessionKey, runId: randomUUID() };
+    const capture = beginSilentSendCapture(sessionKey);
+    const deliver = vi.fn(async () => ({ visibleReplySent: true }));
+    capture.activate();
+    try {
+      bindSilentSendCaptureToRun({ prompt: capture.marker }, context);
+      recordSilentSendModelStarted({}, context);
+      const event = { toolName: "inkbox_send_email", toolCallId: "inner-final-send", params: { completeSilently: true } };
+      recordSilentSendBeforeToolCall(event, context);
+      recordSilentSendAfterToolCall({ ...event, result: accepted
+        ? { terminate: true, details: { inkboxSendCompletion: { accepted: true, completeSilently: true } } }
+        : { isError: true } }, context);
+      const result = await dispatchInboundMessageWithDispatcher({
+        ctx: { Body: "Send the email only.", From: "inkbox:sms:peer", To: "inkbox:sms:peer", OriginatingChannel: "inkbox", OriginatingTo: "inkbox:sms:peer", Provider: "inkbox", Surface: "inkbox", ChatType: "direct", SessionKey: sessionKey, MessageSid: randomUUID(), CommandAuthorized: true },
+        cfg: { session: { store: join(directory, "sessions.json") }, agents: { defaults: { workspace: directory } } },
+        dispatcherOptions: { deliver, transformReplyPayload: capture.transform },
+        replyResolver: async () => nativeFailure,
+      });
+      expect(deliver).toHaveBeenCalledTimes(accepted ? 0 : 1);
+      if (accepted) expect(result.counts.final).toBe(0);
+      else expect(deliver.mock.calls[0][0]).toMatchObject(nativeFailure);
     } finally {
       capture.finish();
       vi.unstubAllEnvs();
@@ -168,35 +211,12 @@ describe.skipIf(baselineWithoutFinalizer)("actual host explicit tool-batch compl
   });
 
   it("does not misclassify intentional termination as an empty interactive failure", async () => {
-    const classify = await hostFunction("result-fallback-classifier", "hasIntentionalTerminalCompletion");
-    const empty = await hostFunction("reply-admission-ticket", "buildEmptyInteractiveReplyPayload");
-    const result = { meta: { intentionalTerminalCompletion: "tool-batch" } };
-    expect(classify(result)).toBe(true);
-    expect(empty({ isInteractive: true, hasIntentionalTerminalCompletion: classify(result) })).toBeUndefined();
-    expect(empty({ isInteractive: true, sessionCtx: { ChatType: "direct" }, cfg: {}, hasIntentionalTerminalCompletion: classify({ meta: {} }) })).toHaveProperty("text");
-  });
-
-  it("reproduces the outer dispatch propagation gap without inventing visible delivery", async () => {
-    const classify = await hostFunction("result-fallback-classifier", "hasDeliberateSilentTerminalReply");
-    const finalize = await hostFunction("dispatch-from-config.finalize", "finalizeDispatchAndAudit");
-    const route = vi.fn(async () => ({ ok: true }));
-    const deliberateSilentTerminalReply = classify({ meta: { intentionalTerminalCompletion: "tool-batch" } });
-    expect(deliberateSilentTerminalReply).toBe(false);
-    const result = await finalize({
-      cfg: {}, ctx: {}, replyRoute: {}, deliberateSilentTerminalReply,
-      noVisibleReplyFallbackDirected: true, sourceReplyDeliveryMode: "automatic",
-      progressState: { accumulatedBlockTtsText: "", blockCount: 0, channelTransformSuppressed: false },
-      replyOperationRunState: {}, bindingState: {}, routeState: {},
-      dispatcher: { getQueuedCounts: () => ({ final: 0, block: 0, tool: 0 }) },
-      turnLedger: { canAttemptFallback: () => true, settleQueued: async () => "settled" },
-      flushPendingCommentaryProgress: async () => {}, waitForPendingDirectBlockReplyDelivery: async () => {},
-      getDispatchAbortSignal: () => undefined, getObservedReplyDelivery: () => false, getAgentRunId: () => undefined,
-      throwIfDispatchOperationAborted: () => {}, routeReplyToOriginating: route,
-      isRoutedReplyDelivered: (value: any) => value.ok, getAgentRunTerminalOutcome: () => undefined,
-      commitInboundDedupeIfClaimed: () => {}, recordAgentDispatchCompleted: () => {}, recordProcessed: () => {}, markIdle: () => {},
-      completeDispatchReplyOperation: () => {}, attachSourceReplyDeliveryMode: (value: any) => value,
-    });
-    expect(route).toHaveBeenCalledOnce();
-    expect(result.result.noVisibleReplyFallbackDelivered).toBe(true);
+    const classify = agentHarnessRuntime.classifyEmbeddedAgentRunResultForModelFallback;
+    expect(classify).toBeTypeOf("function");
+    const input = { provider: "synthetic", model: "synthetic" };
+    expect(classify({ ...input, result: { meta: { intentionalTerminalCompletion: "tool-batch" }, payloads: [] } })).toBeNull();
+    expect(classify({ ...input, result: { meta: {}, payloads: [] } })).toMatchObject({ code: "empty_result" });
+    expect(classify({ ...input, result: { meta: { finalAssistantRawText: "NO_REPLY" }, payloads: [] } })).toBeNull();
+    expect(classify({ ...input, result: { meta: { finalAssistantRawText: "[SILENT]" }, payloads: [] } })).toMatchObject({ code: "empty_result" });
   });
 });

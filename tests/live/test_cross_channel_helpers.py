@@ -171,10 +171,28 @@ def test_send_boundary_diagnostics_extract_only_allowlisted_metadata():
         "send tool shape: tool=untrusted-tool-name chars=5",
         '[inkbox] silent send shape: bound=true batch=true attempts=1 accepted=1 invalid=false private body',
         '{"message":"Inkbox silent send shape: bound=false batch=false attempts=0 accepted=0 invalid=false","secret":"private"}',
+        'Inkbox silent send invalid: reason=missing_before final_param=string tool=transport private-content',
+        'Inkbox silent send invalid: reason=private-error final_param=string tool=send',
+        'Inkbox silent send invalid: reason=tool_error final_param=private-content tool=send',
     ])
     assert cross._source_reply_shapes(log) == [
         "send tool shape: tool=inkbox_send_email chars=13",
         "routed send shape: channel=inkbox chars=102",
         "silent send shape: bound=true batch=true attempts=1 accepted=1 invalid=false",
         "silent send shape: bound=false batch=false attempts=0 accepted=0 invalid=false",
+        "silent send invalid: reason=missing_before final_param=string tool=transport",
     ]
+
+
+def test_capture_owner_diagnostics_are_closed_enums_and_bounded_counts():
+    valid = "silent send owner: tool=tool_search name=present id=event_composite relationship=event_only prior=absent alias=true batch=2 before=3 hook=batch_owner_v2"
+    records = [
+        "Inkbox " + valid + " private-id private-body",
+        valid.replace("tool=tool_search", "tool=private-tool"),
+        valid.replace("id=event_composite", "id=private-id"),
+        valid.replace("relationship=event_only", "relationship=private-id"),
+        valid.replace("batch=2", "batch=10000"),
+        valid.replace("before=3", "before=3private"),
+        valid.replace("hook=batch_owner_v2", "hook=private-module-path"),
+    ]
+    assert cross._source_reply_shapes("\n".join(records)) == [valid]

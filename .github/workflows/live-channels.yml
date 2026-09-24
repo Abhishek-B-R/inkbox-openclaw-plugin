@@ -51,6 +51,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+      - name: Keep test caches outside the linked plugin
+        # OpenClaw snapshots the whole linked package during native cold-load.
+        run: |
+          echo "PYTHONPYCACHEPREFIX=$RUNNER_TEMP/python-pycache" >> "$GITHUB_ENV"
+          echo "PYTEST_ADDOPTS=-o cache_dir=\"$RUNNER_TEMP/pytest-cache\"" >> "$GITHUB_ENV"
       - name: Set up env paths (gateway log)
         run: echo "GATEWAY_LOG=$RUNNER_TEMP/gateway.log" >> "$GITHUB_ENV"
 
@@ -63,19 +68,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install live-test deps (Inkbox SDK + pytest)
+      - uses: astral-sh/setup-uv@v7
+      - name: Install live-test deps (published SDK + pytest)
         run: |
-          pip install 'inkbox==0.6.10' pytest
+          uv pip install --system inkbox==0.7.6 pytest
 
       - name: Build the plugin
         run: |
           bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" ci
-          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install --no-save --package-lock=false openclaw@2026.5.27
+          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install --no-save --package-lock=false openclaw@latest
           npm run build
 
-      - name: Install OpenClaw host
+      - name: Install the matching OpenClaw host
         run: |
-          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install -g openclaw@latest
+          HOST_VERSION="$(node -p 'require("./node_modules/openclaw/package.json").version')"
+          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install -g "openclaw@$HOST_VERSION"
           openclaw --version
 
       - name: Onboard model provider (${{ matrix.mode }})
@@ -151,7 +158,9 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          openclaw gateway run > "$GATEWAY_LOG" 2>&1 &
+          # Keep native error metadata in the existing private gateway log.
+          openclaw config set logging.consoleStyle json
+          OPENCLAW_LOG_LEVEL=trace OPENCLAW_DEBUG_CODE_MODE=1 OPENCLAW_DIAGNOSTICS=1 OPENCLAW_DIAGNOSTICS_TIMELINE_PATH="$RUNNER_TEMP/native-timeline.jsonl" openclaw gateway run > "$GATEWAY_LOG" 2>&1 &
           echo $! > "$RUNNER_TEMP/gateway.pid"
           echo "Waiting for the gateway to be ready (tunnel + webhooks)…"
           for i in $(seq 1 36); do      # up to ~180s
@@ -175,7 +184,7 @@ jobs:
           AUT_WEBHOOK_URL: http://127.0.0.1:18789/inkbox/webhook
         run: |
           if [ "${{ matrix.mode }}" = "real" ]; then
-            LIVE_REAL_MODEL=1 python3 -m pytest tests/live -v --tb=short
+            LIVE_REAL_MODEL=1 python3 -m pytest tests/live -v --tb=short --maxfail=1
           else
             python3 -m pytest tests/live -v --tb=short
           fi
@@ -192,13 +201,19 @@ jobs:
 
           sys.path.insert(0, "tests/live")
           from test_cross_channel import _source_reply_shapes
+          from model_failure_diagnostics import read_native_model_failure_shapes, read_native_timeline_shapes
 
           log_path = Path(os.environ["GATEWAY_LOG"])
           log = log_path.read_text(errors="replace") if log_path.exists() else ""
           # Only fixed metadata; the host strips redundant subsystem prefixes.
           for shape in _source_reply_shapes(log):
               print(shape)
+          for shape in read_native_model_failure_shapes(log_path):
+              print(shape)
+          for shape in read_native_timeline_shapes(Path(os.environ["RUNNER_TEMP"]) / "native-timeline.jsonl"):
+              print(shape)
           PY
+          node tests/ci/native_error_locations.mjs "$(command -v openclaw)" "$GATEWAY_LOG"
 
       - name: Tear down (always)
         if: always()

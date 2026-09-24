@@ -292,6 +292,7 @@ openclaw config set 'agents.defaults.models["openai/gpt-5.6-sol"].agentRuntime.i
 Use your configured model key in place of the example. Inkbox setup does not change your model or override an explicitly chosen runner. This setting concerns the main agent, not the separate realtime voice provider.
 
 Setup also enables OpenClaw's `plugins.entries.inkbox.hooks.allowConversationAccess` permission. The plugin needs this host permission to bind channel sends and Voice AI completions to their exact runs before accepting side-effecting tool evidence, and to associate A2A progress with its worker run. Conversation bodies are not stored in the completion registry or replay journal.
+For manual configuration, explicitly set `plugins.entries.inkbox.hooks.allowConversationAccess: true` to enable those lifecycle hooks, native approval routing, and confirmation that background group context was consumed. Without that permission, unconfirmed background context remains retained and may appear in later turns; the plugin does not enable the permission automatically outside setup.
 
 ### OpenAI Realtime
 
@@ -340,7 +341,7 @@ iMessage works differently from SMS: the agent does not get its own iMessage num
 
 If a person disconnects the agent, outbound sends to that conversation fail until they reconnect through the router and message the agent again. Conversation rows expose `assignmentStatus` (`active`/`released`) so the agent can see this, and `inkbox_list_imessage_assignments` lists who is currently connected. Outbound delivery transitions (`imessage.sent`, `imessage.delivered`, `imessage.delivery_failed`) arrive as webhooks and are logged by the gateway without waking the agent, matching the SMS lifecycle handling.
 
-While the agent composes a reply, the recipient sees a typing indicator — the gateway pulses it until the response sends (or the agent decides no reply is warranted). Inbound tapbacks (`imessage.reaction_received`) do wake the agent: the turn carries the reaction, the message it targets, and a response policy — a `question` tapback usually warrants a reply, while `love`/`like`/`laugh`/`dislike` usually resolve to `NO_REPLY` and nothing is sent.
+While the agent composes a reply, the recipient sees a typing indicator — the gateway pulses it until the response sends. In automatic group mode and direct conversations, a `question` tapback is treated as a request for clarification. Other tapbacks are ambient events: normally nothing is sent; if a response is warranted, the agent sends it explicitly into the same conversation. In group mention mode, unmentioned reactions remain background context without waking the agent.
 
 Once someone is connected over iMessage, the agent can also place and receive **voice calls** with them over that same shared line — see [Two calling lines](#two-calling-lines). This works even for an agent that has no dedicated phone number.
 
@@ -427,7 +428,7 @@ Required by default:
 - Inbound A2A tasks are delivered into isolated context sessions. During those
   turns, `inkbox_a2a_complete`, `inkbox_a2a_ask_caller`, and
   `inkbox_a2a_fail` commit the task outcome explicitly.
-- The plugin pins `@inkbox/sdk` 0.6.10.
+- The plugin pins `@inkbox/sdk` 0.7.6.
 - Email reads: `inkbox_list_unread_emails`, `inkbox_list_emails`, `inkbox_get_email`, `inkbox_get_email_thread`
 - SMS reads: `inkbox_list_text_conversations`, `inkbox_get_text_conversation` (conversation-ID aware, groups included by default)
 - iMessage reads: `inkbox_list_imessage_conversations`, `inkbox_get_imessage_conversation`
@@ -447,6 +448,87 @@ Optional:
 - Diagnostic: `inkbox_whoami`
 
 Send and email-forward tools accept optional `completeSilently: true` when the send is the final requested action and no acknowledgment is wanted. Successful sends then end the turn without an extra source-channel reply. Leave it unset when more work or a reply remains; failed sends never silently complete.
+
+## Group replies and Companion mode
+
+Group SMS and iMessage participants share a conversation session, including
+reactions. Different groups and direct conversations remain separate. Automatic
+email replies use the stored message's reply-all route, preserving visible To/CC
+and threading without adding BCC recipients or the agent itself. Explicit new-email
+tools still use the recipients you specify.
+
+The setup wizard exposes these independent choices for new or existing identities:
+
+| Setting | Values | Default |
+| --- | --- | --- |
+| `channels.inkbox.groupReplyMode` / `INKBOX_GROUP_REPLY_MODE` | `auto`, `mention` | `auto` |
+| `channels.inkbox.companionResponseMode` / `INKBOX_COMPANION_RESPONSE_MODE` | `safe`, `relaxed` | `safe` |
+
+Saved account settings override environment defaults. In mention mode, the current
+message must contain a complete, case-insensitive `@agent` or `@<agent-handle>`.
+Links, email addresses, previous messages, and older batched fragments do not count.
+Unmentioned group messages and reactions are persisted as background context for
+the next waking turn, without model calls, tools, typing, or interrupting work.
+Ordinary local slash controls and native `/approve <id> <decision>` answers from
+the prompted sender remain available without a mention.
+Eligible ordinary messages reach OpenClaw immediately and follow its native
+queue/steering settings; the plugin does not replace that scheduler or force an
+abort-and-restart on every new message. Quiet messages never enter that queue.
+Companion model turns are processed serially within their conversation scope.
+
+Automatic SMS/iMessage groups allow the model to remain silent during ordinary
+chatter. The dispatch uses OpenClaw's Inkbox-only
+`surfaces.inkbox.silentReply.group="allow"` default without changing saved config;
+explicit surface or agent-default silence settings are preserved. Current mentions
+and commands retain the host's required-reply behavior. On newer OpenClaw hosts,
+ordinary direct requests require an answer: `NO_REPLY` alone does not suppress it.
+Successful explicit `completeSilently` sends still suppress duplicate acknowledgements.
+
+Companion mode is enabled separately on the Inkbox identity by an administrator
+who selects a sponsor. Installing this plugin does not change that configuration.
+Sponsored email, group MMS, and supported dedicated-line iMessage conversations
+load the complete authorized initialization snapshot through the SDK, including
+later pages, notices, and attachment references. Environment, identity, channel,
+conversation scope, and activation isolate sessions. An activation is an access
+period, not an individual message; ordinary tracked messages remain separate.
+
+Safe mode wakes only for current messages with `sender_access: "direct"`.
+Sponsored messages and messages with missing or unknown access stay context-only.
+Relaxed mode may respond to any delivered sender. Admission metadata is not a
+statement of trust or permission to execute commands. In Companion email mention
+mode, the agent's actual mailbox in the current **To** list also counts as
+addressed; Cc-only messages do not. This never bypasses Safe mode.
+
+Companion slash controls require the current access/addressing gates and the sponsor.
+Eligible controls can reach a running turn without waiting for its model reply.
+`/clear` uses OpenClaw's `/new`, `/cancel` uses `/stop`, and `/health` shows native
+session `/status`. OpenClaw has no historical-session picker for `/resume`; the
+channel explains that limitation without starting a model or claiming a session
+was resumed.
+Native `/approve <id> <decision>` answers require those same access/addressing gates
+and the original waking turn's sender, who may differ from the sponsor in Relaxed
+mode (email matching is case-insensitive). In mention mode, use, for example,
+`@agent /approve <id> allow-once`.
+Native approval prompts are delivered immediately on the original turn's route;
+eligible answers resolve the waiting host approval without starting another model
+turn. Pending prompts expire or clear with the host's approval lifecycle.
+History never acts as a new command or approval. Later replies use the saved
+sponsor message for email or the canonical group conversation for texts; they do
+not reload activation history before every turn or send.
+
+Inputs are bounded at 128 KiB and are not silently truncated. Private journals in
+`~/.openclaw/inkbox/` persist receipts before acknowledgment and background context
+across restarts. Completed model replies are checkpointed before sending. Known
+transient pre-submission/pre-send failures retry with bounded backoff. Other
+preparation failures stop after five retries; uncertain host
+submissions or sends remain paused for inspection, never blindly replayed. This is
+at-least-once webhook delivery, not a guarantee of exactly-once model execution.
+Ordinary mention-mode background context retains compact sender/text/media entries
+up to 128 KiB; when older context is omitted, the next waking turn receives an
+explicit retention notice. Status/stop/approval commands do not consume background
+context; an authorized, committed reset clears the captured context even if its
+acknowledgment cannot be delivered. Companion snapshots remain fail-closed at their size
+limit and are never silently truncated.
 
 ## Bundled Skills
 

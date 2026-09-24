@@ -12,6 +12,16 @@ const workflows = [
 ];
 
 describe("CI resilience contracts", () => {
+  it("runs live gateways with the same host version outside the linked plugin tree", () => {
+    for (const name of workflows.filter((value) => value.startsWith("live-"))) {
+      const workflow = readFileSync(resolve(".github", "workflows", name), "utf8");
+      expect(workflow).toContain('HOST_VERSION="$(node -p \'require("./node_modules/openclaw/package.json").version\')"');
+      expect(workflow).toContain('install -g "openclaw@$HOST_VERSION"');
+      expect(workflow).not.toContain("install -g openclaw@latest");
+      expect(workflow).not.toContain('node_modules/.bin" >> "$GITHUB_PATH"');
+      expect(workflow).not.toContain("openclaw@2026.5.27");
+    }
+  });
   it("bounds setup-only npm retries in every host workflow", () => {
     for (const name of workflows) {
       const workflow = readFileSync(
@@ -47,4 +57,14 @@ describe("CI resilience contracts", () => {
     expect(source).toContain("CALL_ATTEMPTS = 1");
     expect(source).toContain("EMAIL_ATTEMPTS = 1");
   });
+  it("uses published SDK installs without references to an obsolete local build action", () => {
+    for (const name of workflows) {
+      const workflow = readFileSync(resolve(".github", "workflows", name), "utf8");
+      expect(workflow).not.toContain("./.github/actions/inkbox-sdk");
+      expect(workflow).not.toContain("INKBOX_SDK_PATH");
+      expect(workflow).not.toContain("INKBOX_PYTHON_SDK_PATH");
+      if (name.startsWith("live-")) expect(workflow).toContain("inkbox==0.7.6");
+    }
+  });
+
 });

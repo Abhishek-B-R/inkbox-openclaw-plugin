@@ -45,6 +45,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+      - name: Keep test caches outside the linked plugin
+        # OpenClaw snapshots the whole linked package during native cold-load.
+        run: |
+          echo "PYTHONPYCACHEPREFIX=$RUNNER_TEMP/python-pycache" >> "$GITHUB_ENV"
+          echo "PYTEST_ADDOPTS=-o cache_dir=\"$RUNNER_TEMP/pytest-cache\"" >> "$GITHUB_ENV"
       - name: Set up env paths (gateway log)
         run: echo "GATEWAY_LOG=$RUNNER_TEMP/gateway.log" >> "$GITHUB_ENV"
 
@@ -57,19 +62,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install live-test deps (Inkbox SDK + pytest)
+      - uses: astral-sh/setup-uv@v7
+      - name: Install live-test deps (published SDK + pytest)
         run: |
-          pip install 'inkbox==0.6.10' pytest
+          uv pip install --system inkbox==0.7.6 pytest
 
       - name: Build the plugin
         run: |
           bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" ci
-          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install --no-save --package-lock=false openclaw@2026.5.27
+          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install --no-save --package-lock=false openclaw@latest
           npm run build
 
-      - name: Install OpenClaw host
+      - name: Install the matching OpenClaw host
         run: |
-          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install -g openclaw@latest
+          HOST_VERSION="$(node -p 'require("./node_modules/openclaw/package.json").version')"
+          bash "$GITHUB_WORKSPACE/tests/ci/npm_with_retry.sh" install -g "openclaw@$HOST_VERSION"
           openclaw --version
 
       - name: Onboard model provider (real OpenAI)

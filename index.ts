@@ -1,4 +1,5 @@
-import { bindSilentSendCaptureToRun, recordSilentSendModelStarted, recordSilentSendBeforeToolCall, recordSilentSendAfterToolCall } from "./src/silent-send-capture.js";
+import { bindSilentSendCaptureToRun, recordSilentSendModelStarted, recordSilentSendBeforeToolCall, recordSilentSendAfterToolCall, reconcileSilentSendAgentEnd } from "./src/silent-send-capture.js";
+import { bindNativeApprovalTurnToRun, markNativeConversationReset } from "./src/inbound/native-approvals.js";
 import {
   defineChannelPluginEntry,
   type ChannelPlugin,
@@ -8,7 +9,7 @@ import {
 import { createInkboxRuntime, type InkboxPluginConfig } from "./src/client.js";
 import { inkboxPlugin } from "./src/channel.js";
 import { registerInkboxPublicUrlInboundRoutes } from "./src/gateway.js";
-import { resolveInkboxAccount, resolveInkboxToolsConfig } from "./src/accounts.js";
+import { listInkboxAccountIds, resolveInkboxAccount, resolveInkboxToolsConfig } from "./src/accounts.js";
 import { registerSendEmail } from "./src/tools/send-email.js";
 import { registerSendSms } from "./src/tools/send-sms.js";
 import { registerSendIMessage } from "./src/tools/send-imessage.js";
@@ -161,6 +162,11 @@ function registerInkboxTools(api: any): void {
 }
 
 function registerHostedCallSettlementHooks(api: any): void {
+  if (api.registrationMode === "full") {
+    api.registerHook(["command:new", "command:reset"], (event: any) => {
+      markNativeConversationReset(api.runtime?.channel, listInkboxAccountIds(api.runtime?.config?.current?.()), event);
+    }, { name: "inkbox-conversation-reset", description: "Clear captured group background context after an authorized session reset." });
+  }
   api.on("message_sending", (event: any, context: any) => {
     if (context.channelId !== "inkbox") return;
     api.logger?.info?.(
@@ -168,6 +174,7 @@ function registerHostedCallSettlementHooks(api: any): void {
     );
   });
   api.on("before_agent_run", (event: any, context: any) => {
+    bindNativeApprovalTurnToRun(api.runtime?.channel, listInkboxAccountIds(api.runtime?.config?.current?.()), event, context);
     bindHostedSmsCaptureToRun(event, context);
     bindSilentSendCaptureToRun(event, context);
     bindA2AProgressActivityToRun(event, context);
@@ -189,6 +196,7 @@ function registerHostedCallSettlementHooks(api: any): void {
   });
   api.on("model_call_started", recordSilentSendModelStarted);
   api.on("after_tool_call", recordSilentSendAfterToolCall);
+  api.on("agent_end", reconcileSilentSendAgentEnd);
   api.on("after_tool_call", recordHostedSmsAfterToolCall);
   api.on("model_call_ended", recordHostedModelCallEnded);
 }

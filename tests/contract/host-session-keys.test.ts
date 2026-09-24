@@ -12,7 +12,7 @@ const hostVersion = JSON.parse(readFileSync(join(hostDist, "..", "package.json")
 
 async function storageValidator(): Promise<(key: string, agentId?: string) => void> {
   const files = readdirSync(hostDist).filter((file) =>
-    file.startsWith("session-accessor.sqlite-") &&
+    (file.startsWith("session-accessor.sqlite-") || file.startsWith("session-canonical-key-")) &&
     (file.endsWith(".js") || file.endsWith(".mjs")) &&
     readFileSync(join(hostDist, file), "utf8").includes("function assertCanonicalSessionKeyWrite("),
   );
@@ -49,6 +49,19 @@ describe("actual host A2A session-key contract", () => {
     expect(scoped(key, "another-worker")).toBe(key);
     expect(scoped("global")).toBe("global");
     expect(scoped("unknown")).toBe("unknown");
+  });
+
+  it("keeps Companion ordinary, activation, identity, and cohort routes distinct", () => {
+    const keys = [
+      "companion:account:identity:mail:conversation-cohort:ordinary",
+      "companion:account:identity:mail:conversation-cohort:activation:one",
+      "companion:account:identity:mail:conversation-cohort:activation:two",
+      "companion:account:identity:mail:another-cohort:activation:one",
+      "companion:account:another-identity:mail:conversation-cohort:activation:one",
+      "companion:account:identity:imessage:conversation-cohort:activation:one",
+    ].map((raw) => scoped(raw));
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const key of keys) expect(parseAgentSessionKey(key)?.agentId).toBe("worker");
   });
 
   // The minimum supported May host predates canonical SQLite writes. Do not
