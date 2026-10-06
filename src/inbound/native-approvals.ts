@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { withFileLock } from "openclaw/plugin-sdk/file-lock";
+import { withFileLock } from "../file-lock.js";
 import { ensureStateDir, statePaths } from "../state.js";
 import { createChannelApprovalNativeRuntimeAdapter, resolveApprovalOverGateway, type ChannelApprovalNativeRuntimeAdapter } from "openclaw/plugin-sdk/approval-handler-runtime";
 import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
@@ -12,8 +12,9 @@ type Decision = "allow-once" | "allow-always" | "deny";
 export type NativeApprovalOwner = { scope: string; author: string; channel: string; accountId: string };
 export type NativeApprovalBinding = NativeApprovalOwner & {
   to: string; threadId?: string; sessionKey: string; marker: string; runId?: string; modelStarted?: boolean; resetRequested?: boolean; resetCommitted?: boolean;
-  deliver(text: string): Promise<void>;
+  deliver(text: string, approvalId: string): Promise<void>;
   ready?(): Promise<void>;
+  activity?(phase: "waiting" | "resumed"): void;
 };
 type RecordValue = { author: string; kind: ApprovalKind; expiresAt: number; decisions: string[]; resolutionPending?: boolean };
 type NativeEntry = { binding: NativeApprovalBinding; id: string };
@@ -44,7 +45,7 @@ export function ensureNativeApprovalContext(core: any, accountId: string, abortS
   return context;
 }
 export function trackNativeApprovalTurn(core: any, binding: NativeApprovalBinding): () => void {
-  if (!["mail", "phone", "sms", "imessage"].includes(binding.channel)) return () => {};
+  if (!["mail", "phone", "sms", "imessage", "slack"].includes(binding.channel)) return () => {};
   // Account startup owns this context. A late dispatch must not recreate it after shutdown.
   const context = core?.runtimeContexts?.get?.({ channelId: "inkbox", accountId: binding.accountId, capability }) as NativeContext | undefined;
   context?.bindings.set(binding.sessionKey, [...(context.bindings.get(binding.sessionKey) ?? []), binding]);
@@ -75,6 +76,7 @@ export function markNativeConversationReset(core: any, accountIds: string[], eve
   }
 }
 async function clear(entry: NativeEntry): Promise<void> {
+  entry.binding.activity?.("resumed");
   const buffer = contextBuffer(entry.binding.scope);
   await buffer.acknowledge((await buffer.snapshot()).filter((item) => item.id === entry.id));
 }
@@ -122,12 +124,13 @@ export const inkboxApprovalCapability = {
       deliverPending: async (params) => {
         const binding = params.preparedTarget;
         if (find(params) !== binding) return null;
-        await binding.deliver(params.pendingPayload);
+        await binding.deliver(params.pendingPayload, params.request.id);
         const buffer = contextBuffer(binding.scope);
         const entries = await buffer.snapshot();
         await buffer.acknowledge(entries.filter((entry) => { try { return JSON.parse(entry.body).expiresAt <= Date.now(); } catch { return false; } }));
         const record: RecordValue = { author: binding.author, kind: params.approvalKind as ApprovalKind, expiresAt: params.request.expiresAtMs, decisions: params.view.actions.flatMap((action) => "decision" in action ? [action.decision] : []) };
         await buffer.append({ id: params.request.id, body: JSON.stringify(record) });
+        binding.activity?.("waiting");
         await binding.ready?.();
         return { binding, id: params.request.id };
       },

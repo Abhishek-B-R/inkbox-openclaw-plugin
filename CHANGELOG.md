@@ -20,6 +20,31 @@ All notable changes to the Inkbox OpenClaw plugin are listed here. The format fo
 - Hosted-call SMS follow-ups now use the call record's authoritative remote number, require tool-confirmed success, and allow one corrected retry after a recoverable content or policy rejection without falsely reporting terminal failures as complete.
 - Contact-rule tools are now read-only because agent-scoped identities cannot change mailbox or phone rules; make rule changes in the Inkbox Console.
 
+## [0.2.16]
+
+### Added
+
+- Opt-in Slack setup, signed events, six tools, channel-wide Companion history, exact-thread native controls, and destination-specific working indicators.
+- Opt-in source-targeted iMessage replies, durable noninterrupting follow-ups, bounded text bursts, and native thread reads.
+- Durable native run ownership and exact-run terminal fencing so uncertain sends remain unreplayed without permanently blocking safe later work.
+- Optional individual generic Vault secret retrieval, with login TOTP seed redaction.
+- Native doctor checks for channel capability/readiness and content-free durable queue uncertainty.
+
+### Changed
+
+- Pin published Inkbox TypeScript SDK 0.7.14.
+- Verify exact native iMessage source/backend support before targeted sends; source-owned Stop cancels captured pending followers without affecting later requests.
+- List Vault metadata while locked, refresh identity access and plaintext/code reads, and default lazy unlock to `INKBOX_OPENCLAW_VAULT_KEY` (custom variables remain supported).
+- Preserve existing voice, A2A, hosted-call SMS settlement, native approvals, and feature-off messaging behavior.
+- Keep concurrent approval answers single-use across supported OpenClaw versions and preserve concurrent delivery-status updates.
+- Retain native iMessage failed-output status and the original accepted route across callback-first delivery and restart; keep unmatched notices quiet and preserve accepted sends if optional metadata persistence fails.
+- Recognize current native Code Mode child-call ownership when honoring an accepted, explicitly silent cross-channel send.
+- Keep explicitly separate sends independent of source-answer receipts; preserve enabled cross-channel reads without expanding iMessage Companion history.
+- Avoid unengaged ordinary Slack threads, bind controls to the current actor, and recheck saved-answer authority after safe connection reads.
+- Preserve Slack setup settings when initial verification fails and check doctor readiness against the published SDK surface.
+- Move completed ordinary receipts to a durable indexed archive without expiring replay or callback proof; retain active and uncertain work in the journal.
+- Retain approval-send outcomes after a stopped turn, preserve crossed send outcomes while stopping unsent reply blocks, keep approval uncertainty separate from model answers, resume unsent saved answers after restart, and require mentions in group DMs when configured.
+
 ## [0.2.15]
 
 ### Added

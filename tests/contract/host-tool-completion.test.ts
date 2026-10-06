@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { wrapToolWithBeforeToolCallHook } from "openclaw/plugin-sdk/agent-harness-runtime";
 import * as agentHarnessRuntime from "openclaw/plugin-sdk/agent-harness-runtime";
@@ -12,10 +12,17 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { beginSilentSendCapture, bindSilentSendCaptureToRun, recordSilentSendModelStarted, recordSilentSendBeforeToolCall, recordSilentSendAfterToolCall } from "../../src/silent-send-capture.js";
 
+// Current hosts cache a process-wide SQLite handle. Keep case directories alive
+// until the isolated test file exits; session keys/stores remain case-specific.
+const caseDirectories: string[] = [];
+afterAll(async () => { await Promise.all(caseDirectories.map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 }))); });
 const require = createRequire(import.meta.url);
 const hostDist = dirname(dirname(require.resolve("openclaw/plugin-sdk/reply-runtime")));
 const hostVersion = JSON.parse(readFileSync(join(hostDist, "..", "package.json"), "utf8")).version;
 const baselineWithoutFinalizer = hostVersion === "2026.5.27";
+// Native worker startup/SQLite I/O can exceed Vitest's 5s default under full-suite concurrency.
+vi.setConfig({ testTimeout: 30_000 });
+const nativeToolCallPrefix = hostVersion.localeCompare("2026.9.8", undefined, { numeric: true }) >= 0 ? "tool_call" : "tool_search_code";
 const requiredSourceFinalizer = hostVersion.localeCompare("2026.9.6", undefined, { numeric: true }) >= 0;
 
 async function hostFunction(bundle: string, name: string, aliases: string[] = []): Promise<any> {
@@ -63,51 +70,80 @@ describe.skipIf(baselineWithoutFinalizer)("actual host explicit tool-batch compl
     const reset = await hostFunction("hook-runner-global", "resetGlobalHookRunner");
     const currentRegistry = await hostFunction("hook-runner-global", "getGlobalHookRunnerRegistry");
     const getRunner = await hostFunction("hook-runner-global", "getGlobalHookRunner");
-    const priorRegistry = currentRegistry();
-    const catalogRef = (await hostFunction("local-model-lean", "createToolSearchCatalogRef"))();
-    const register = await hostFunction("local-model-lean", "registerHeadlessToolSearchCatalog");
-    const createControls = await hostFunction("local-model-lean", "createToolSearchTools");
-    const context = { sessionKey: `agent:main:inkbox:direct:${randomUUID()}`, runId: randomUUID() };
-    const events: Array<{ toolName: string; toolCallId: string; runId: string }> = [];
-    const receipt = { accepted: true, completeSilently: true };
-    const execute = vi.fn(async () => succeeds
-      ? { content: [{ type: "text" as const, text: "Accepted" }], details: { inkboxSendCompletion: receipt }, terminate: true }
-      : { content: [{ type: "text" as const, text: "Rejected" }], details: {}, isError: true });
-    const capture = beginSilentSendCapture(context.sessionKey);
-    capture.activate();
-    bindSilentSendCaptureToRun({ prompt: capture.marker }, context);
-    recordSilentSendModelStarted({}, context);
-    initialize({ hooks: [], plugins: [], trustedToolPolicies: [], typedHooks: [{ pluginId: "inkbox", hookName: "before_tool_call", handler: (event: any, hookContext: any) => {
-      events.push(event);
-      recordSilentSendBeforeToolCall(event, hookContext);
-    } }, { pluginId: "inkbox", hookName: "after_tool_call", handler: recordSilentSendAfterToolCall }] });
-    try {
-      register({ catalogRef, hookContext: context, tools: [{ name: "inkbox_send_email", label: "Send email", description: "Send email", parameters: Type.Object({ completeSilently: Type.Boolean() }), execute }] });
-      const rawControl = createControls({ ...context, catalogRef, config: {}, executeTool: async (params: any) => {
-        const result = await params.tool.execute(params.toolCallId, params.input, params.signal, params.onUpdate);
-        // The embedded subscription supplies this nested lifecycle event. Run
-        // its public hook dispatcher with the exact executed name/args/result.
-        await getRunner().runAfterToolCall({ ...context, toolName: params.toolName, toolCallId: params.toolCallId, params: params.input, result }, context);
-        return await params.acceptResultBeforeProjection(result);
-      } }).find((tool: any) => tool.name === "tool_call");
-      const control = wrapToolWithBeforeToolCallHook(rawControl, context);
-      const args = { id: "inkbox_send_email", args: { completeSilently: true } };
-      const result: any = await control.execute("outer-send", args);
-      await getRunner().runAfterToolCall({ ...context, toolName: "tool_call", toolCallId: "outer-send", params: args, result }, context);
-      expect(execute).toHaveBeenCalledOnce();
-      expect(events.map((event) => event.toolName)).toEqual(["tool_call", "inkbox_send_email"]);
-      expect(events.map((event) => event.runId)).toEqual([context.runId, context.runId]);
-      expect(events[0].toolCallId).toBe("outer-send");
-      expect(events[1].toolCallId).toBe("tool_search_code:outer-send:inkbox_send_email:1");
-      expect(result.terminate).toBe(succeeds ? true : undefined);
-      expect(result.details.tool.name).toBe("inkbox_send_email");
-      if (succeeds) expect(result.details.result).toMatchObject({ terminate: true, details: { inkboxSendCompletion: receipt } });
-      expect(capture.shape().invalid).toBe(!succeeds);
-      expect(capture.transform({ text: "A source acknowledgement" })).toEqual(succeeds ? null : { text: "A source acknowledgement" });
-    } finally {
-      capture.finish();
-      if (priorRegistry) initialize(priorRegistry);
-      else reset();
+    // Exercise both transports against the installed host. Code Mode's child
+    // IDs come from ToolSearchRuntime too; a copied legacy exec fixture misses
+    // the current prefix change even when direct tool_call remains compatible.
+    for (const transport of ["tool_call", "exec"]) {
+      const priorRegistry = currentRegistry();
+      const catalogRef = (await hostFunction("local-model-lean", "createToolSearchCatalogRef", ["tool-search"]))();
+      const register = await hostFunction("local-model-lean", "registerHeadlessToolSearchCatalog", ["tool-search"]);
+      const createControls = await hostFunction("local-model-lean", "createToolSearchTools", ["tool-search"]);
+      const context = { sessionKey: `agent:main:inkbox:direct:${randomUUID()}`, runId: randomUUID() };
+      const events: Array<{ toolName: string; toolCallId: string; runId: string }> = [];
+      const receipt = { accepted: true, completeSilently: true };
+      const execute = vi.fn(async () => succeeds
+        ? { content: [{ type: "text" as const, text: "Accepted" }], details: { inkboxSendCompletion: receipt }, terminate: true }
+        : { content: [{ type: "text" as const, text: "Rejected" }], details: {}, isError: true });
+      const capture = beginSilentSendCapture(context.sessionKey);
+      let nativeCore: any;
+      capture.activate();
+      bindSilentSendCaptureToRun({ prompt: capture.marker }, context);
+      recordSilentSendModelStarted({}, context);
+      initialize({ hooks: [], plugins: [], trustedToolPolicies: [], typedHooks: [{ pluginId: "inkbox", hookName: "before_tool_call", handler: (event: any, hookContext: any) => {
+        events.push(event);
+        recordSilentSendBeforeToolCall(event, hookContext);
+      } }, { pluginId: "inkbox", hookName: "after_tool_call", handler: recordSilentSendAfterToolCall }] });
+      try {
+        const sendTool = { name: "inkbox_send_email", label: "Send email", description: "Send email", parameters: Type.Object({ completeSilently: Type.Boolean() }), execute };
+        const executeTool = async (params: any) => {
+          const result = await params.tool.execute(params.toolCallId, params.input, params.signal, params.onUpdate);
+          // The embedded subscription supplies this nested lifecycle event. Run
+          // its public hook dispatcher with the exact executed name/args/result.
+          await getRunner().runAfterToolCall({ ...context, toolName: params.toolName, toolCallId: params.toolCallId, params: params.input, result }, context);
+          return await params.acceptResultBeforeProjection(result);
+        };
+        let rawControl: any;
+        if (transport === "exec") {
+          const createCore = await hostFunction("tool-surface-bridge", "createAgentHarnessToolSurfaceRuntimeCore", ["local-model-lean"]);
+          nativeCore = createCore({ ...context, config: {}, agentId: "main", forceCodeModeControls: true, modelToolsEnabled: true, executeTool });
+          expect(nativeCore.codeModeControlsEnabled).toBe(true);
+          rawControl = nativeCore.compactTools([sendTool], { hookContext: context }).tools.find((tool: any) => tool.name === "exec");
+        } else {
+          register({ catalogRef, hookContext: context, tools: [sendTool] });
+          rawControl = createControls({ ...context, catalogRef, config: {}, executeTool }).find((tool: any) => tool.name === "tool_call");
+        }
+        expect(rawControl).toBeDefined();
+        const control = wrapToolWithBeforeToolCallHook(rawControl, context);
+        const args = transport === "exec"
+          ? { title: "Send only", code: "await inkbox_send_email({ completeSilently: true });" }
+          : { id: "inkbox_send_email", args: { completeSilently: true } };
+        const outerId = "outer-send|native-item";
+        const result: any = await control.execute(outerId, args);
+        await getRunner().runAfterToolCall({ ...context, toolName: transport, toolCallId: outerId, params: args, result }, context);
+        expect(execute, `Synthetic ${transport} execution`).toHaveBeenCalledOnce();
+        expect(events.map((event) => event.toolName)).toEqual([transport, "inkbox_send_email"]);
+        expect(events.map((event) => event.runId)).toEqual([context.runId, context.runId]);
+        expect(events[0].toolCallId).toBe(outerId);
+        if (transport === "exec") expect(events[0]).toMatchObject({ toolKind: "code_mode_exec", toolInputKind: "javascript" });
+        expect(events[1].toolCallId).toBe(`${nativeToolCallPrefix}:outer-send_native-item:inkbox_send_email:1`);
+        expect(result.terminate).toBe(succeeds ? true : undefined);
+        if (transport === "tool_call") {
+          expect(result.details.tool.name).toBe("inkbox_send_email");
+          if (succeeds) expect(result.details.result).toMatchObject({ terminate: true, details: { inkboxSendCompletion: receipt } });
+        } else if (succeeds) expect(result.details.status).toBe("completed");
+        expect(capture.shape().invalid).toBe(!succeeds);
+        expect(capture.transform({ text: "A source acknowledgement" })).toEqual(succeeds ? null : { text: "A source acknowledgement" });
+        if (requiredSourceFinalizer) {
+          const buildEmptyReply = await hostFunction("commentary-progress-owner", "buildEmptyInteractiveReplyPayload");
+          const nativeFailure = buildEmptyReply({ completion: { outcome: "missing" } });
+          expect(capture.transform(nativeFailure)).toEqual(succeeds ? null : nativeFailure);
+        }
+      } finally {
+        nativeCore?.cleanup();
+        capture.finish();
+        if (priorRegistry) initialize(priorRegistry);
+        else reset();
+      }
     }
   });
   it.each([
@@ -154,7 +190,7 @@ describe.skipIf(baselineWithoutFinalizer)("actual host explicit tool-batch compl
     } finally {
       capture.finish();
       vi.unstubAllEnvs();
-      await rm(directory, { recursive: true, force: true });
+      caseDirectories.push(directory);
     }
   });
   it.skipIf(!requiredSourceFinalizer).each([true, false])("handles the actual inner native empty-reply error with accepted final send=%s", async (accepted) => {
@@ -190,7 +226,7 @@ describe.skipIf(baselineWithoutFinalizer)("actual host explicit tool-batch compl
     } finally {
       capture.finish();
       vi.unstubAllEnvs();
-      await rm(directory, { recursive: true, force: true });
+      caseDirectories.push(directory);
     }
   });
   it("recognizes only entirely successful, explicitly terminating batches", async () => {

@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { activeNativeSource, assertNativeSource } from "../native-source.js";
+import { verifyNativeIMessageTarget } from "../imessage-threading.js";
 import { Type } from "typebox";
 import type { InkboxRuntime } from "../client.js";
 import { runTool, toolError } from "../errors.js";
@@ -39,8 +42,11 @@ export function registerSendIMessage(
   api: any,
   runtime: InkboxRuntime,
   allowedRecipients?: string[],
+  threadedRepliesEnabled: () => boolean = () => true,
 ): void {
-  api.registerTool({
+  api.registerTool((context: { sessionKey?: string }) => {
+    const source = activeNativeSource(context.sessionKey);
+    return {
     name: "inkbox_send_imessage",
     description:
       "Send an iMessage from the configured Inkbox identity. Recipient-first channel: a person must have connected via the Inkbox iMessage router and messaged this agent before outbound sends work, so prefer `conversationId` from an inbound message or `inkbox_list_imessage_conversations`.",
@@ -94,6 +100,13 @@ export function registerSendIMessage(
     }),
     async execute(_id: string, params: any) {
       return runTool(async () => {
+        const validateSource = (identityId = source?.identityId) => {
+          if (!source) return;
+          if (source.replyToMessageId && !threadedRepliesEnabled()) throw new Error("Native iMessage replies are disabled; this source-owned send cannot be downgraded or continued.");
+          assertNativeSource(source, identityId!);
+        };
+        validateSource();
+        if ("replyToMessageId" in params || "plainReplyFallback" in params) return toolError("Reply targeting and fallback are owned by the current source, not model arguments.");
         const text = typeof params.text === "string" ? params.text : "";
         const mediaUrls = Array.isArray(params.mediaUrls) ? params.mediaUrls : undefined;
         if (!text && !mediaUrls?.length) {
@@ -105,25 +118,45 @@ export function registerSendIMessage(
         const conversationId =
           typeof params.conversationId === "string" ? params.conversationId.trim() : "";
         const to = typeof params.to === "string" ? params.to.trim() : "";
-        if (Boolean(conversationId) === Boolean(to)) {
+        const bound = Boolean(source?.replyToMessageId && !to && (!conversationId || conversationId === source.conversationId));
+        if ((conversationId && to) || (!bound && !conversationId && !to)) {
           return toolError("Specify exactly one of `to` or `conversationId`.");
         }
         if (to) {
           const block = checkOutboundRecipient(to, allowedRecipients);
           if (block) return toolError(block);
-        } else if (allowedRecipients?.length) {
+        } else if (!bound && allowedRecipients?.length) {
           return toolError(
             "`conversationId` sends cannot be checked against the local outbound recipient allowlist. Use an explicit `to` recipient or adjust the allowlist.",
           );
         }
 
         const identity = await runtime.getIdentity();
+        validateSource(identity.id);
+        if (bound && source?.replyToMessageId) {
+          const block = checkOutboundRecipient(source.author, allowedRecipients);
+          if (block) return toolError(block);
+          await verifyNativeIMessageTarget(identity, source.conversationId, source.replyToMessageId);
+          validateSource(identity.id);
+          await source.beforeSend(_id);
+          validateSource(identity.id);
+        } else if (source) {
+          await source.validate();
+          validateSource(identity.id);
+        }
         const msg = await identity.sendIMessage({
-          ...(conversationId ? { conversationId } : { to }),
+          ...(bound && source?.replyToMessageId ? { conversationId: source.conversationId, replyToMessageId: source.replyToMessageId, plainReplyFallback: true,
+            idempotencyKey: `openclaw:tool:${createHash("sha256").update(JSON.stringify([source.identityId, source.conversationId, source.replyToMessageId, _id, text, mediaUrls])).digest("hex")}` } : conversationId ? { conversationId } : { to }),
           ...(text ? { text } : {}),
           ...(mediaUrls?.length ? { mediaUrls } : {}),
           ...(params.sendStyle ? { sendStyle: params.sendStyle } : {}),
         });
+        // Only source-bound sends belong to this source's output history.
+        // Independent destinations stay separate and never suppress its answer.
+        if (bound && source?.replyToMessageId) {
+          try { await source.recordIMessageAccepted?.(msg); } catch { /* Accepted send; optional history failure is not permission to resend. */ }
+        }
+        if (bound && source?.replyToMessageId) await source.afterSend(_id, msg.id, text);
         const target = conversationId ? `conversation=${conversationId}` : `to=${to}`;
         return sentToolText(
           `Sent iMessage id=${msg.id} ${target} conversation_id=${msg.conversationId} status=${msg.status ?? "unknown"}`,
@@ -131,5 +164,6 @@ export function registerSendIMessage(
         );
       });
     },
-  });
+    };
+  }, { names: ["inkbox_send_imessage"] });
 }
